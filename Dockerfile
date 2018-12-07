@@ -8,7 +8,7 @@ COPY . $GOPATH/src/github.com/coreos/prometheus-operator
 RUN yum install -y golang make git && \
    cd $GOPATH/src/github.com/coreos/prometheus-operator && \
    make operator && cp $GOPATH/src/github.com/coreos/prometheus-operator/operator /usr/bin/ && \
-   yum erase -y golang make && yum clean all
+   yum autoremove -y golang make git && yum clean all
 
 LABEL io.k8s.display-name="Prometheus Operator" \
       io.k8s.description="This component manages the lifecycle and configuration of a Prometheus monitoring server as well as Prometheus Alertmanager clusters." \

@@ -86,8 +86,23 @@ operator:
 operator-no-deps:
 	GOOS=linux CGO_ENABLED=0 go build \
 	-mod=vendor \
-	-ldflags "-X $(GO_PKG)/pkg/version.Version=$(shell cat VERSION)" \
+	-ldflags="-s -X $(PROMETHEUS_COMMON_PKG)/version.Revision=$(shell git rev-parse --short HEAD)  \
+		-X $(PROMETHEUS_COMMON_PKG)/version.BuildUser=$(shell whoami)  \
+		-X $(PROMETHEUS_COMMON_PKG)/version.BuildDate=$(shell date +"%Y%m%d-%T") \
+		-X $(PROMETHEUS_COMMON_PKG)/version.Branch=$(shell git rev-parse --abbrev-ref HEAD) \
+		-X $(PROMETHEUS_COMMON_PKG)/version.Version=$(shell cat VERSION)" \
 	-o operator cmd/operator/main.go
+
+.PHONY: prometheus-config-reloader-no-deps
+prometheus-config-reloader-no-deps:
+	GOOS=linux CGO_ENABLED=0 go build \
+	-mod=vendor \
+	-ldflags="-s -X $(PROMETHEUS_COMMON_PKG)/version.Revision=$(shell git rev-parse --short HEAD)  \
+		-X $(PROMETHEUS_COMMON_PKG)/version.BuildUser=$(shell whoami)  \
+		-X $(PROMETHEUS_COMMON_PKG)/version.BuildDate=$(shell date +"%Y%m%d-%T") \
+		-X $(PROMETHEUS_COMMON_PKG)/version.Branch=$(shell git rev-parse --abbrev-ref HEAD) \
+		-X $(PROMETHEUS_COMMON_PKG)/version.Version=$(shell cat VERSION)" \
+	-o prometheus-config-reloader cmd/prometheus-config-reloader/main.go
 
 .PHONY: prometheus-config-reloader
 prometheus-config-reloader:

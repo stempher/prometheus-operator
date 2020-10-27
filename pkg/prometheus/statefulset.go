@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"github.com/pkg/errors"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/prometheus-operator/prometheus-operator/pkg/k8sutil"
@@ -370,6 +370,7 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 				)
 			}
 		}
+
 	default:
 		return nil, errors.Errorf("unsupported Prometheus major version %s", version)
 	}
@@ -388,6 +389,12 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 				fmt.Sprintf("-query.timeout=%s", *p.Spec.Query.Timeout),
 			)
 		}
+	}
+
+	if p.Spec.Web != nil && p.Spec.Web.PageTitle != nil {
+		promArgs = append(promArgs,
+			fmt.Sprintf("-web.page-title=%s", *p.Spec.Web.PageTitle),
+		)
 	}
 
 	if p.Spec.EnableAdminAPI {
@@ -549,17 +556,15 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 		})
 	}
 
-	const localProbe = `if [ -x "$(command -v curl)" ]; then curl %s; elif [ -x "$(command -v wget)" ]; then wget -q -O /dev/null %s; else exit 1; fi`
+	const localProbe = `if [ -x "$(command -v curl)" ]; then exec curl %s; elif [ -x "$(command -v wget)" ]; then exec wget -q -O /dev/null %s; else exit 1; fi`
 
-	var livenessProbeHandler v1.Handler
 	var readinessProbeHandler v1.Handler
-	var livenessFailureThreshold int32
 	if (version.Major == 1 && version.Minor >= 8) || version.Major == 2 {
 		{
 			healthyPath := path.Clean(webRoutePrefix + "/-/healthy")
 			if p.Spec.ListenLocal {
 				localHealthyPath := fmt.Sprintf("http://localhost:9090%s", healthyPath)
-				livenessProbeHandler.Exec = &v1.ExecAction{
+				readinessProbeHandler.Exec = &v1.ExecAction{
 					Command: []string{
 						"sh",
 						"-c",
@@ -567,7 +572,7 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 					},
 				}
 			} else {
-				livenessProbeHandler.HTTPGet = &v1.HTTPGetAction{
+				readinessProbeHandler.HTTPGet = &v1.HTTPGetAction{
 					Path: healthyPath,
 					Port: intstr.FromString(p.Spec.PortName),
 				}
@@ -593,27 +598,17 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 			}
 		}
 
-		livenessFailureThreshold = 6
-
 	} else {
-		livenessProbeHandler = v1.Handler{
+		readinessProbeHandler = v1.Handler{
 			HTTPGet: &v1.HTTPGetAction{
 				Path: path.Clean(webRoutePrefix + "/status"),
 				Port: intstr.FromString(p.Spec.PortName),
 			},
 		}
-		readinessProbeHandler = livenessProbeHandler
-		// For larger servers, restoring a checkpoint on startup may take quite a bit of time.
-		// Wait up to 5 minutes (60 fails * 5s per fail)
-		livenessFailureThreshold = 60
 	}
 
-	livenessProbe := &v1.Probe{
-		Handler:          livenessProbeHandler,
-		PeriodSeconds:    5,
-		TimeoutSeconds:   probeTimeoutSeconds,
-		FailureThreshold: livenessFailureThreshold,
-	}
+	// TODO(paulfantom): Re-add livenessProbe and add startupProbe when kubernetes 1.21 is available.
+	// This would be a follow-up to https://github.com/prometheus-operator/prometheus-operator/pull/3502
 	readinessProbe := &v1.Probe{
 		Handler:          readinessProbeHandler,
 		TimeoutSeconds:   probeTimeoutSeconds,
@@ -671,7 +666,6 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 
 		thanosArgs := []string{"sidecar",
 			fmt.Sprintf("--prometheus.url=http://%s:9090%s", c.LocalHost, path.Clean(webRoutePrefix)),
-			fmt.Sprintf("--tsdb.path=%s", storageDir),
 			fmt.Sprintf("--grpc-address=%s:10901", bindAddress),
 			fmt.Sprintf("--http-address=%s:10902", bindAddress),
 		}
@@ -714,13 +708,6 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 					ContainerPort: 10901,
 				},
 			},
-			VolumeMounts: []v1.VolumeMount{
-				{
-					Name:      volName,
-					MountPath: storageDir,
-					SubPath:   subPathForStorage(p.Spec.Storage),
-				},
-			},
 			Resources: p.Spec.Thanos.Resources,
 		}
 
@@ -732,6 +719,17 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 					SecretKeyRef: p.Spec.Thanos.ObjectStorageConfig,
 				},
 			})
+
+			container.Args = append(container.Args, fmt.Sprintf("--tsdb.path=%s", storageDir))
+			container.VolumeMounts = append(
+				container.VolumeMounts,
+				v1.VolumeMount{
+					Name:      volName,
+					MountPath: storageDir,
+					SubPath:   subPathForStorage(p.Spec.Storage),
+				},
+			)
+
 			// NOTE(bwplotka): As described in https://thanos.io/components/sidecar.md/ we have to turn off compaction of Prometheus
 			// to avoid races during upload, if the uploads are configured.
 			disableCompaction = true
@@ -799,7 +797,6 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 			Ports:                    ports,
 			Args:                     promArgs,
 			VolumeMounts:             promVolumeMounts,
-			LivenessProbe:            livenessProbe,
 			ReadinessProbe:           readinessProbe,
 			Resources:                p.Spec.Resources,
 			TerminationMessagePolicy: v1.TerminationMessageFallbackToLogsOnError,
@@ -852,6 +849,7 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *operator.Config, ruleConf
 				Volumes:                       volumes,
 				Tolerations:                   p.Spec.Tolerations,
 				Affinity:                      p.Spec.Affinity,
+				TopologySpreadConstraints:     p.Spec.TopologySpreadConstraints,
 			},
 		},
 	}, nil
@@ -874,11 +872,7 @@ func prefixedName(name string) string {
 }
 
 func subPathForStorage(s *monitoringv1.StorageSpec) string {
-	if s == nil {
-		return ""
-	}
-
-	if s.DisableMountSubPath {
+	if s == nil || s.DisableMountSubPath {
 		return ""
 	}
 

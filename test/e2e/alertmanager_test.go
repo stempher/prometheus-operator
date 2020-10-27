@@ -31,10 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/prometheus-operator/prometheus-operator/pkg/alertmanager"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
 	testFramework "github.com/prometheus-operator/prometheus-operator/test/framework"
-	"github.com/golang/protobuf/proto"
 )
 
 func testAMCreateDeleteCluster(t *testing.T) {
@@ -327,8 +328,8 @@ func testAMClusterGossipSilences(t *testing.T) {
 				return false, nil
 			}
 
-			if silences[0].ID != silId {
-				return false, errors.Errorf("expected silence id on alertmanager %v to match id of created silence '%v' but got %v", i, silId, silences[0].ID)
+			if *silences[0].ID != silId {
+				return false, errors.Errorf("expected silence id on alertmanager %v to match id of created silence '%v' but got %v", i, silId, *silences[0].ID)
 			}
 			return true, nil
 		})
@@ -636,7 +637,6 @@ inhibit_rules:
 
 		go func() {
 			ticker := time.NewTicker(100 * time.Millisecond)
-			start := time.Now()
 			failures := 0
 			for {
 				select {
@@ -644,7 +644,6 @@ inhibit_rules:
 					err := framework.SendAlertToAlertmanager(
 						ns,
 						"alertmanager-rolling-deploy-"+strconv.Itoa(replica),
-						start,
 					)
 					if err != nil {
 						failures++
@@ -714,4 +713,171 @@ inhibit_rules:
 	if c != 1 {
 		t.Fatalf("Only one notification expected, but %d received after rolling update of Alertmanager cluster.\n\n%s", c, logs)
 	}
+}
+
+func testAMConfigCRD(t *testing.T) {
+	// Don't run Alertmanager tests in parallel. See
+	// https://github.com/prometheus/alertmanager/issues/1835 for details.
+
+	ctx := framework.NewTestCtx(t)
+	defer ctx.Cleanup(t)
+	ns := ctx.CreateNamespace(t, framework.KubeClient)
+	ctx.SetupPrometheusRBAC(t, ns, framework.KubeClient)
+
+	alertmanager := framework.MakeBasicAlertmanager("amconfig-crd", 1)
+	alertmanager.Spec.AlertmanagerConfigSelector = &metav1.LabelSelector{}
+	if _, err := framework.CreateAlertmanagerAndWaitUntilReady(ns, alertmanager); err != nil {
+		t.Fatal(err)
+	}
+
+	routingKeySecret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pd-receiver-routing-key",
+		},
+		Data: map[string][]byte{
+			"routing-key": []byte("1234abc"),
+		},
+	}
+	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), routingKeySecret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeySecret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "og-receiver-api-key",
+		},
+		Data: map[string][]byte{
+			"api-key": []byte("1234abc"),
+		},
+	}
+	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), apiKeySecret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A valid AlertmanagerConfig resource.
+	configCR := &monitoringv1alpha1.AlertmanagerConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "e2e-test-amconfig",
+			Namespace: ns,
+		},
+		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
+			Route: &monitoringv1alpha1.Route{
+				Receiver: "e2e",
+				Matchers: []monitoringv1alpha1.Matcher{},
+				Continue: true,
+			},
+			Receivers: []monitoringv1alpha1.Receiver{{
+				Name: "e2e",
+				OpsGenieConfigs: []monitoringv1alpha1.OpsGenieConfig{{
+					APIKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: "og-receiver-api-key",
+						},
+						Key: "api-key",
+					},
+				}},
+				PagerDutyConfigs: []monitoringv1alpha1.PagerDutyConfig{{
+					RoutingKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: "pd-receiver-routing-key",
+						},
+						Key: "routing-key",
+					},
+				}},
+				WebhookConfigs: []monitoringv1alpha1.WebhookConfig{{
+					URL: func(s string) *string {
+						return &s
+					}("http://test.url"),
+				}},
+			}},
+		},
+	}
+
+	if _, err := framework.MonClientV1alpha1.AlertmanagerConfigs(ns).Create(context.TODO(), configCR, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An AlertmanagerConfig resource that references a missing secret key, it
+	// should be rejected by the operator.
+	configCR = &monitoringv1alpha1.AlertmanagerConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "e2e-test-amconfig-2",
+			Namespace: ns,
+		},
+		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
+			Route: &monitoringv1alpha1.Route{
+				Receiver: "e2e",
+				Matchers: []monitoringv1alpha1.Matcher{},
+			},
+			Receivers: []monitoringv1alpha1.Receiver{{
+				Name: "e2e",
+				PagerDutyConfigs: []monitoringv1alpha1.PagerDutyConfig{{
+					RoutingKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: "pd-receiver-routing-key",
+						},
+						Key: "non-existing-key",
+					},
+				}},
+			}},
+		},
+	}
+
+	if _, err := framework.MonClientV1alpha1.AlertmanagerConfigs(ns).Create(context.TODO(), configCR, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the change above to take effect.
+	err := wait.Poll(5*time.Second, 2*time.Minute, func() (bool, error) {
+		cfgSecret, err := framework.KubeClient.CoreV1().Secrets(ns).Get(context.TODO(), "alertmanager-amconfig-crd-generated", metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		if cfgSecret.Data["alertmanager.yaml"] == nil {
+			return false, nil
+		}
+
+		expected := fmt.Sprintf(`global:
+  resolve_timeout: 5m
+route:
+  receiver: "null"
+  group_by:
+  - job
+  routes:
+  - receiver: %v-e2e-test-amconfig-e2e
+    match:
+      namespace: %v
+    continue: true
+  - receiver: "null"
+    match:
+      alertname: DeadMansSwitch
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+receivers:
+- name: "null"
+- name: %v-e2e-test-amconfig-e2e
+  opsgenie_configs:
+  - send_resolved: false
+    api_key: 1234abc
+  pagerduty_configs:
+  - send_resolved: false
+    routing_key: 1234abc
+  webhook_configs:
+  - send_resolved: false
+    url: http://test.url
+templates: []
+`, ns, ns, ns)
+
+		if string(cfgSecret.Data["alertmanager.yaml"]) != expected {
+			return false, nil
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 }

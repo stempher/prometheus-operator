@@ -31,14 +31,29 @@ Maintaining the release branches for older minor releases happens on a best effo
 
 ## Prepare your release
 
+Bump the version in the `VERSION` file in the root of the repository.
+
+While on the master branch tag `pkg/apis/monitoring` package:
+
+```bash
+$ tag=$(< VERSION) && git tag -s "pkg/apis/monitoring/v${tag}" -m "pkg/apis/monitoring/v${tag}"
+$ git push origin "pkg/apis/monitoring/v${tag}"
+```
+
 For a patch release, work in the branch of the minor release you want to patch.
 
 For a new major or minor release, create the corresponding release branch based on the master branch.
 
-Bump the version in the `VERSION` file in the root of the repository. Once that's done, a number of files have to be re-generated, this is automated with the following make target:
+A number of files have to be re-generated, this is automated with the following make target:
 
 ```bash
 $ make clean generate
+```
+
+Bump the version for `pkg/apis/monitoring` package in go.mod:
+
+```bash
+$ go get "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring@v${VERSION}"
 ```
 
 Now that all version information has been updated, an entry for the new version can be added to the `CHANGELOG.md` file.
@@ -58,7 +73,7 @@ Once the PR for the new release has been merged, make sure there is a release br
 
 Push the new or updated release branch to the upstream repository.
 
-Tag the new release with a tag named `v<major>.<minor>.<patch>`, e.g. `v2.1.3`. Note the `v` prefix.
+Tag the new release with a tag named `v<major>.<minor>.<patch>`, e.g. `v2.1.3`. Note the `v` prefix. Tag also the `github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring` module with `pkg/apis/monitoring/v<major>.<minor>.<patch>`.
 
 You can do the tagging on the commandline:
 

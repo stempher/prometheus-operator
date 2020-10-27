@@ -24,6 +24,7 @@ import (
 	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"github.com/prometheus-operator/prometheus-operator/pkg/assets"
 	monitoringclient "github.com/prometheus-operator/prometheus-operator/pkg/client/versioned"
 	"github.com/prometheus-operator/prometheus-operator/pkg/informers"
 	"github.com/prometheus-operator/prometheus-operator/pkg/k8sutil"
@@ -87,21 +88,6 @@ type Operator struct {
 
 	configGenerator *configGenerator
 }
-
-// BasicAuthCredentials represents a username password pair to be used with
-// basic http authentication, see https://tools.ietf.org/html/rfc7617.
-type BasicAuthCredentials struct {
-	username string
-	password string
-}
-
-// BearerToken represents a bearer token, see
-// https://tools.ietf.org/html/rfc6750.
-type BearerToken string
-
-// TLSAsset represents any TLS related opaque string, e.g. CA files, client
-// certificates.
-type TLSAsset string
 
 // New creates a new controller.
 func New(ctx context.Context, conf operator.Config, logger log.Logger, r prometheus.Registerer) (*Operator, error) {
@@ -347,33 +333,28 @@ func (c *Operator) waitForCacheSync(ctx context.Context) error {
 		{"StatefulSet", c.ssetInfs},
 	} {
 		for _, inf := range infs.informersForResource.GetInformers() {
-			if !cache.WaitForCacheSync(ctx.Done(), inf.Informer().HasSynced) {
-				level.Error(c.logger).Log("msg", fmt.Sprintf("failed to sync %s cache", infs.name))
+			if !operator.WaitForCacheSync(ctx, log.With(c.logger, "informer", infs.name), inf.Informer()) {
 				ok = false
-			} else {
-				level.Debug(c.logger).Log("msg", fmt.Sprintf("successfully synced %s cache", infs.name))
 			}
 		}
 	}
 
-	informers := []struct {
+	for _, inf := range []struct {
 		name     string
 		informer cache.SharedIndexInformer
 	}{
 		{"PromNamespace", c.nsPromInf},
 		{"MonNamespace", c.nsMonInf},
-	}
-	for _, inf := range informers {
-		if !cache.WaitForCacheSync(ctx.Done(), inf.informer.HasSynced) {
-			level.Error(c.logger).Log("msg", fmt.Sprintf("failed to sync %s cache", inf.name))
+	} {
+		if !operator.WaitForCacheSync(ctx, log.With(c.logger, "informer", inf.name), inf.informer) {
 			ok = false
-		} else {
-			level.Debug(c.logger).Log("msg", fmt.Sprintf("successfully synced %s cache", inf.name))
 		}
 	}
+
 	if !ok {
 		return errors.New("failed to sync caches")
 	}
+
 	level.Info(c.logger).Log("msg", "successfully synced all caches")
 	return nil
 }
@@ -472,6 +453,7 @@ func (c *Operator) Run(ctx context.Context) error {
 		go c.reconcileNodeEndpoints(ctx)
 	}
 
+	c.metrics.Ready().Set(1)
 	<-ctx.Done()
 	return nil
 }
@@ -583,15 +565,18 @@ func getNodeAddresses(nodes *v1.NodeList) ([]v1.EndpointAddress, []error) {
 }
 
 func (c *Operator) syncNodeEndpointsWithLogError(ctx context.Context) {
+	level.Debug(c.logger).Log("msg", "Syncing nodes into Endpoints object")
+
 	c.nodeEndpointSyncs.Inc()
 	err := c.syncNodeEndpoints(ctx)
 	if err != nil {
 		c.nodeEndpointSyncErrors.Inc()
-		level.Error(c.logger).Log("msg", "syncing nodes into Endpoints object failed", "err", err)
+		level.Error(c.logger).Log("msg", "Syncing nodes into Endpoints object failed", "err", err)
 	}
 }
 
 func (c *Operator) syncNodeEndpoints(ctx context.Context) error {
+	logger := log.With(c.logger, "operation", "syncNodeEndpoints")
 	eps := &v1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: c.kubeletObjectName,
@@ -624,13 +609,17 @@ func (c *Operator) syncNodeEndpoints(ctx context.Context) error {
 		return errors.Wrap(err, "listing nodes failed")
 	}
 
+	level.Debug(logger).Log("Nodes retrieved from the Kubernetes API", "num_nodes", len(nodes.Items))
+
 	addresses, errs := getNodeAddresses(nodes)
 	if len(errs) > 0 {
 		for _, err := range errs {
-			level.Warn(c.logger).Log("err", err)
+			level.Warn(logger).Log("err", err)
 		}
 		c.nodeAddressLookupErrors.Add(float64(len(errs)))
 	}
+	level.Debug(logger).Log("Nodes converted to endpoint addresses", "num_addresses", len(addresses))
+
 	eps.Subsets[0].Addresses = addresses
 
 	svc := &v1.Service{
@@ -660,11 +649,13 @@ func (c *Operator) syncNodeEndpoints(ctx context.Context) error {
 		},
 	}
 
+	level.Debug(logger).Log("msg", "Updating Kubernetes service", "service", c.kubeletObjectName, "ns", c.kubeletObjectNamespace)
 	err = k8sutil.CreateOrUpdateService(ctx, c.kclient.CoreV1().Services(c.kubeletObjectNamespace), svc)
 	if err != nil {
 		return errors.Wrap(err, "synchronizing kubelet service object failed")
 	}
 
+	level.Debug(logger).Log("msg", "Updating Kubernetes endpoint", "endpoint", c.kubeletObjectName, "ns", c.kubeletObjectNamespace)
 	err = k8sutil.CreateOrUpdateEndpoints(ctx, c.kclient.CoreV1().Endpoints(c.kubeletObjectNamespace), eps)
 	if err != nil {
 		return errors.Wrap(err, "synchronizing kubelet endpoints object failed")
@@ -943,16 +934,7 @@ func (c *Operator) enqueueForNamespace(store cache.Store, nsName string) {
 	}
 	ns := nsObject.(*v1.Namespace)
 
-	objs, err := c.promInfs.List(labels.Everything())
-	if err != nil {
-		level.Error(c.logger).Log(
-			"msg", "listing all Prometheus instances from cache failed",
-			"err", err,
-		)
-		return
-	}
-
-	for _, obj := range objs {
+	err = c.promInfs.ListAll(labels.Everything(), func(obj interface{}) {
 		// Check for Prometheus instances in the namespace.
 		p := obj.(*monitoringv1.Prometheus)
 		if p.Namespace == nsName {
@@ -1021,7 +1003,14 @@ func (c *Operator) enqueueForNamespace(store cache.Store, nsName string) {
 			c.enqueue(p)
 			return
 		}
+	})
+	if err != nil {
+		level.Error(c.logger).Log(
+			"msg", "listing all Prometheus instances from cache failed",
+			"err", err,
+		)
 	}
+
 }
 
 // worker runs a worker thread that just dequeues items, processes them, and
@@ -1041,6 +1030,7 @@ func (c *Operator) processNextWorkItem(ctx context.Context) bool {
 
 	c.metrics.ReconcileCounter().Inc()
 	err := c.sync(ctx, key.(string))
+	c.metrics.SetSyncStatus(key.(string), err == nil)
 	if err == nil {
 		c.queue.Forget(key)
 		return true
@@ -1135,6 +1125,7 @@ func (c *Operator) sync(ctx context.Context, key string) error {
 	pobj, err := c.promInfs.Get(key)
 
 	if apierrors.IsNotFound(err) {
+		c.metrics.ForgetObject(key)
 		// Dependent resources are cleaned up by K8s via OwnerReferences
 		return nil
 	}
@@ -1157,7 +1148,7 @@ func (c *Operator) sync(ctx context.Context, key string) error {
 		return err
 	}
 
-	assetStore := newAssetStore(c.kclient.CoreV1(), c.kclient.CoreV1())
+	assetStore := assets.NewStore(c.kclient.CoreV1(), c.kclient.CoreV1())
 
 	if err := c.createOrUpdateConfigurationSecret(ctx, p, ruleConfigMapNames, assetStore); err != nil {
 		return errors.Wrap(err, "creating config failed")
@@ -1378,7 +1369,7 @@ func gzipConfig(buf *bytes.Buffer, conf []byte) error {
 	return nil
 }
 
-func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *monitoringv1.Prometheus, ruleConfigMapNames []string, store *assetStore) error {
+func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *monitoringv1.Prometheus, ruleConfigMapNames []string, store *assets.Store) error {
 	// If no service or pod monitor selectors are configured, the user wants to
 	// manage configuration themselves. Do create an empty Secret if it doesn't
 	// exist.
@@ -1409,7 +1400,7 @@ func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *mon
 		return errors.Wrap(err, "selecting ServiceMonitors failed")
 	}
 
-	pmons, err := c.selectPodMonitors(p)
+	pmons, err := c.selectPodMonitors(ctx, p, store)
 	if err != nil {
 		return errors.Wrap(err, "selecting PodMonitors failed")
 	}
@@ -1426,19 +1417,22 @@ func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *mon
 	}
 
 	for i, remote := range p.Spec.RemoteRead {
-		if err := store.addBasicAuth(ctx, p.GetNamespace(), remote.BasicAuth, fmt.Sprintf("remoteRead/%d", i)); err != nil {
+		if err := store.AddBasicAuth(ctx, p.GetNamespace(), remote.BasicAuth, fmt.Sprintf("remoteRead/%d", i)); err != nil {
 			return errors.Wrapf(err, "remote read %d", i)
 		}
 	}
 
 	for i, remote := range p.Spec.RemoteWrite {
-		if err := store.addBasicAuth(ctx, p.GetNamespace(), remote.BasicAuth, fmt.Sprintf("remoteWrite/%d", i)); err != nil {
+		if err := store.AddBasicAuth(ctx, p.GetNamespace(), remote.BasicAuth, fmt.Sprintf("remoteWrite/%d", i)); err != nil {
+			return errors.Wrapf(err, "remote write %d", i)
+		}
+		if err := store.AddTLSConfig(ctx, p.GetNamespace(), remote.TLSConfig); err != nil {
 			return errors.Wrapf(err, "remote write %d", i)
 		}
 	}
 
 	if p.Spec.APIServerConfig != nil {
-		if err := store.addBasicAuth(ctx, p.GetNamespace(), p.Spec.APIServerConfig.BasicAuth, "apiserver"); err != nil {
+		if err := store.AddBasicAuth(ctx, p.GetNamespace(), p.Spec.APIServerConfig.BasicAuth, "apiserver"); err != nil {
 			return errors.Wrap(err, "apiserver config")
 		}
 	}
@@ -1462,8 +1456,8 @@ func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *mon
 		smons,
 		pmons,
 		bmons,
-		store.basicAuthAssets,
-		store.bearerTokenAssets,
+		store.BasicAuthAssets,
+		store.BearerTokenAssets,
 		additionalScrapeConfigs,
 		additionalAlertRelabelConfigs,
 		additionalAlertManagerConfigs,
@@ -1511,7 +1505,7 @@ func (c *Operator) createOrUpdateConfigurationSecret(ctx context.Context, p *mon
 	return err
 }
 
-func (c *Operator) createOrUpdateTLSAssetSecret(ctx context.Context, p *monitoringv1.Prometheus, store *assetStore) error {
+func (c *Operator) createOrUpdateTLSAssetSecret(ctx context.Context, p *monitoringv1.Prometheus, store *assets.Store) error {
 	boolTrue := true
 	sClient := c.kclient.CoreV1().Secrets(p.Namespace)
 
@@ -1533,13 +1527,7 @@ func (c *Operator) createOrUpdateTLSAssetSecret(ctx context.Context, p *monitori
 		Data: map[string][]byte{},
 	}
 
-	for i, rw := range p.Spec.RemoteWrite {
-		if err := store.addTLSConfig(ctx, p.GetNamespace(), rw.TLSConfig); err != nil {
-			return errors.Wrapf(err, "remote write %d", i)
-		}
-	}
-
-	for key, asset := range store.tlsAssets {
+	for key, asset := range store.TLSAssets {
 		tlsAssetsSecret.Data[key.String()] = []byte(asset)
 	}
 
@@ -1568,7 +1556,7 @@ func (c *Operator) createOrUpdateTLSAssetSecret(ctx context.Context, p *monitori
 	return nil
 }
 
-func (c *Operator) selectServiceMonitors(ctx context.Context, p *monitoringv1.Prometheus, store *assetStore) (map[string]*monitoringv1.ServiceMonitor, error) {
+func (c *Operator) selectServiceMonitors(ctx context.Context, p *monitoringv1.Prometheus, store *assets.Store) (map[string]*monitoringv1.ServiceMonitor, error) {
 	namespaces := []string{}
 	// Selectors (<namespace>/<name>) might overlap. Deduplicate them along the keyFunc.
 	serviceMonitors := make(map[string]*monitoringv1.ServiceMonitor)
@@ -1604,6 +1592,7 @@ func (c *Operator) selectServiceMonitors(ctx context.Context, p *monitoringv1.Pr
 		})
 	}
 
+	var rejected int
 	res := make(map[string]*monitoringv1.ServiceMonitor, len(serviceMonitors))
 	for namespaceAndName, sm := range serviceMonitors {
 		var err error
@@ -1619,20 +1608,23 @@ func (c *Operator) selectServiceMonitors(ctx context.Context, p *monitoringv1.Pr
 
 			smKey := fmt.Sprintf("serviceMonitor/%s/%s/%d", sm.GetNamespace(), sm.GetName(), i)
 
-			if err = store.addBearerToken(ctx, sm.GetNamespace(), endpoint.BearerTokenSecret, smKey); err != nil {
+			if err = store.AddBearerToken(ctx, sm.GetNamespace(), endpoint.BearerTokenSecret, smKey); err != nil {
 				break
 			}
 
-			if err = store.addBasicAuth(ctx, sm.GetNamespace(), endpoint.BasicAuth, smKey); err != nil {
+			if err = store.AddBasicAuth(ctx, sm.GetNamespace(), endpoint.BasicAuth, smKey); err != nil {
 				break
 			}
 
-			if err = store.addTLSConfig(ctx, sm.GetNamespace(), endpoint.TLSConfig); err != nil {
-				break
+			if endpoint.TLSConfig != nil {
+				if err = store.AddTLSConfig(ctx, sm.GetNamespace(), endpoint.TLSConfig); err != nil {
+					break
+				}
 			}
 		}
 
 		if err != nil {
+			rejected++
 			level.Warn(c.logger).Log(
 				"msg", "skipping servicemonitor",
 				"error", err.Error(),
@@ -1652,13 +1644,18 @@ func (c *Operator) selectServiceMonitors(ctx context.Context, p *monitoringv1.Pr
 	}
 	level.Debug(c.logger).Log("msg", "selected ServiceMonitors", "servicemonitors", strings.Join(smKeys, ","), "namespace", p.Namespace, "prometheus", p.Name)
 
+	if pKey, ok := c.keyFunc(p); ok {
+		c.metrics.SetSelectedResources(pKey, monitoringv1.ServiceMonitorsKind, len(res))
+		c.metrics.SetRejectedResources(pKey, monitoringv1.ServiceMonitorsKind, rejected)
+	}
+
 	return res, nil
 }
 
-func (c *Operator) selectPodMonitors(p *monitoringv1.Prometheus) (map[string]*monitoringv1.PodMonitor, error) {
+func (c *Operator) selectPodMonitors(ctx context.Context, p *monitoringv1.Prometheus, store *assets.Store) (map[string]*monitoringv1.PodMonitor, error) {
 	namespaces := []string{}
-	// Selectors might overlap. Deduplicate them along the keyFunc.
-	res := make(map[string]*monitoringv1.PodMonitor)
+	// Selectors (<namespace>/<name>) might overlap. Deduplicate them along the keyFunc.
+	podMonitors := make(map[string]*monitoringv1.PodMonitor)
 
 	podMonSelector, err := metav1.LabelSelectorAsSelector(p.Spec.PodMonitorSelector)
 	if err != nil {
@@ -1682,18 +1679,63 @@ func (c *Operator) selectPodMonitors(p *monitoringv1.Prometheus) (map[string]*mo
 
 	level.Debug(c.logger).Log("msg", "filtering namespaces to select PodMonitors from", "namespaces", strings.Join(namespaces, ","), "namespace", p.Namespace, "prometheus", p.Name)
 
-	podMonitors := []string{}
 	for _, ns := range namespaces {
 		c.pmonInfs.ListAllByNamespace(ns, podMonSelector, func(obj interface{}) {
 			k, ok := c.keyFunc(obj)
 			if ok {
-				res[k] = obj.(*monitoringv1.PodMonitor)
-				podMonitors = append(podMonitors, k)
+				podMonitors[k] = obj.(*monitoringv1.PodMonitor)
 			}
 		})
 	}
 
-	level.Debug(c.logger).Log("msg", "selected PodMonitors", "podmonitors", strings.Join(podMonitors, ","), "namespace", p.Namespace, "prometheus", p.Name)
+	var rejected int
+	res := make(map[string]*monitoringv1.PodMonitor, len(podMonitors))
+	for namespaceAndName, pm := range podMonitors {
+		var err error
+
+		for i, endpoint := range pm.Spec.PodMetricsEndpoints {
+			pmKey := fmt.Sprintf("podMonitor/%s/%s/%d", pm.GetNamespace(), pm.GetName(), i)
+
+			if err = store.AddBearerToken(ctx, pm.GetNamespace(), endpoint.BearerTokenSecret, pmKey); err != nil {
+				break
+			}
+
+			if err = store.AddBasicAuth(ctx, pm.GetNamespace(), endpoint.BasicAuth, pmKey); err != nil {
+				break
+			}
+
+			if endpoint.TLSConfig != nil {
+				if err = store.AddSafeTLSConfig(ctx, pm.GetNamespace(), &endpoint.TLSConfig.SafeTLSConfig); err != nil {
+					break
+				}
+			}
+		}
+
+		if err != nil {
+			rejected++
+			level.Warn(c.logger).Log(
+				"msg", "skipping podmonitor",
+				"error", err.Error(),
+				"podmonitor", namespaceAndName,
+				"namespace", p.Namespace,
+				"prometheus", p.Name,
+			)
+			continue
+		}
+
+		res[namespaceAndName] = pm
+	}
+
+	pmKeys := []string{}
+	for k := range res {
+		pmKeys = append(pmKeys, k)
+	}
+	level.Debug(c.logger).Log("msg", "selected PodMonitors", "podmonitors", strings.Join(pmKeys, ","), "namespace", p.Namespace, "prometheus", p.Name)
+
+	if pKey, ok := c.keyFunc(p); ok {
+		c.metrics.SetSelectedResources(pKey, monitoringv1.PodMonitorsKind, len(res))
+		c.metrics.SetRejectedResources(pKey, monitoringv1.PodMonitorsKind, rejected)
+	}
 
 	return res, nil
 }
@@ -1737,6 +1779,11 @@ func (c *Operator) selectProbes(p *monitoringv1.Prometheus) (map[string]*monitor
 
 	level.Debug(c.logger).Log("msg", "selected Probes", "probes", strings.Join(probes, ","), "namespace", p.Namespace, "prometheus", p.Name)
 
+	if pKey, ok := c.keyFunc(p); ok {
+		c.metrics.SetSelectedResources(pKey, monitoringv1.ProbesKind, len(res))
+		c.metrics.SetRejectedResources(pKey, monitoringv1.ProbesKind, 0)
+	}
+
 	return res, nil
 }
 
@@ -1748,10 +1795,6 @@ func testForArbitraryFSAccess(e monitoringv1.Endpoint) error {
 	tlsConf := e.TLSConfig
 	if tlsConf == nil {
 		return nil
-	}
-
-	if err := e.TLSConfig.Validate(); err != nil {
-		return err
 	}
 
 	if tlsConf.CAFile != "" || tlsConf.CertFile != "" || tlsConf.KeyFile != "" {

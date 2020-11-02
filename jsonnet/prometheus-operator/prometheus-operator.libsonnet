@@ -15,7 +15,7 @@ local k = import 'ksonnet/ksonnet.beta.4/k.libsonnet';
     },
 
     versions+:: {
-      prometheusOperator: 'v0.42.1',
+      prometheusOperator: 'v0.43.0',
       prometheusConfigReloader: self.prometheusOperator,
     },
 
@@ -39,6 +39,7 @@ local k = import 'ksonnet/ksonnet.beta.4/k.libsonnet';
 
     // Prefixing with 0 to ensure these manifests are listed and therefore created first.
     '0alertmanagerCustomResourceDefinition': import 'alertmanager-crd.libsonnet',
+    '0alertmanagerConfigCustomResourceDefinition': import 'alertmanagerconfig-crd.libsonnet',
     '0prometheusCustomResourceDefinition': import 'prometheus-crd.libsonnet',
     '0servicemonitorCustomResourceDefinition': import 'servicemonitor-crd.libsonnet',
     '0podmonitorCustomResourceDefinition': import 'podmonitor-crd.libsonnet',
@@ -66,6 +67,7 @@ local k = import 'ksonnet/ksonnet.beta.4/k.libsonnet';
                              policyRule.withResources([
                                'alertmanagers',
                                'alertmanagers/finalizers',
+                               'alertmanagerconfigs',
                                'prometheuses',
                                'prometheuses/finalizers',
                                'thanosrulers',
@@ -122,7 +124,15 @@ local k = import 'ksonnet/ksonnet.beta.4/k.libsonnet';
                             ]) +
                             policyRule.withVerbs(['get', 'list', 'watch']);
 
-      local rules = [monitoringRule, appsRule, coreRule, podRule, routingRule, nodeRule, namespaceRule];
+      local ingressRule = policyRule.new() +
+                          policyRule.withApiGroups(['networking.k8s.io']) +
+                          policyRule.withResources([
+                            'ingresses',
+                          ]) +
+                          policyRule.withVerbs(['get', 'list', 'watch']);
+
+
+      local rules = [monitoringRule, appsRule, coreRule, podRule, routingRule, nodeRule, namespaceRule, ingressRule];
 
       clusterRole.new() +
       clusterRole.mixin.metadata.withLabels(po.commonLabels) +

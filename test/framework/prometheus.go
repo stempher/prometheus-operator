@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -77,6 +78,11 @@ func (f *Framework) MakeBasicPrometheus(ns, name, group string, replicas int32) 
 					"group": group,
 				},
 			},
+			PodMonitorSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"group": group,
+				},
+			},
 			ServiceAccountName: "prometheus",
 			RuleSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -102,7 +108,9 @@ func (f *Framework) AddRemoteWriteWithTLSToPrometheus(p *monitoringv1.Prometheus
 	if (prwtc.ClientKey.SecretName != "" && prwtc.ClientCert.ResourceName != "") || prwtc.CA.ResourceName != "" {
 
 		p.Spec.RemoteWrite[0].TLSConfig = &monitoringv1.TLSConfig{
-			ServerName: "caandserver.com",
+			SafeTLSConfig: monitoringv1.SafeTLSConfig{
+				ServerName: "caandserver.com",
+			},
 		}
 
 		if prwtc.ClientKey.SecretName != "" && prwtc.ClientCert.ResourceName != "" {
@@ -182,6 +190,30 @@ func (f *Framework) MakeBasicServiceMonitor(name string) *monitoringv1.ServiceMo
 				},
 			},
 			Endpoints: []monitoringv1.Endpoint{
+				{
+					Port:     "web",
+					Interval: "30s",
+				},
+			},
+		},
+	}
+}
+
+func (f *Framework) MakeBasicPodMonitor(name string) *monitoringv1.PodMonitor {
+	return &monitoringv1.PodMonitor{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"group": name,
+			},
+		},
+		Spec: monitoringv1.PodMonitorSpec{
+			Selector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"group": name,
+				},
+			},
+			PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{
 				{
 					Port:     "web",
 					Interval: "30s",
@@ -483,7 +515,7 @@ func (f *Framework) GetHealthyTargets(ns, svcName string) ([]*Target, error) {
 		case healthGood:
 			healthyTargets = append(healthyTargets, target)
 		case healthBad:
-			return nil, errors.New(target.LastError)
+			return nil, errors.Errorf("target %q: %s", target.ScrapeURL, target.LastError)
 		}
 	}
 
@@ -516,6 +548,24 @@ func (f *Framework) CheckPrometheusFiringAlert(ns, svcName, alertName string) (b
 	}
 
 	return alertstate == "firing", nil
+}
+
+// PrintPrometheusLogs prints the logs for each Prometheus replica.
+func (f *Framework) PrintPrometheusLogs(t *testing.T, p *monitoringv1.Prometheus) {
+	if p == nil {
+		return
+	}
+
+	replicas := int(*p.Spec.Replicas)
+	for i := 0; i < replicas; i++ {
+		l, err := GetLogs(f.KubeClient, p.Namespace, fmt.Sprintf("prometheus-%s-%d", p.Name, i), "prometheus")
+		if err != nil {
+			t.Logf("failed to retrieve logs for replica[%d]: %v", i, err)
+			continue
+		}
+		t.Logf("Prometheus #%d replica logs:", i)
+		t.Logf("%s", l)
+	}
 }
 
 func (f *Framework) WaitForPrometheusFiringAlert(ns, svcName, alertName string) error {

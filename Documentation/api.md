@@ -24,6 +24,7 @@ This Document documents the types introduced by the Prometheus Operator to be co
 * [Endpoint](#endpoint)
 * [NamespaceSelector](#namespaceselector)
 * [PodMetricsEndpoint](#podmetricsendpoint)
+* [PodMetricsEndpointTLSConfig](#podmetricsendpointtlsconfig)
 * [PodMonitor](#podmonitor)
 * [PodMonitorList](#podmonitorlist)
 * [PodMonitorSpec](#podmonitorspec)
@@ -51,6 +52,7 @@ This Document documents the types introduced by the Prometheus Operator to be co
 * [RuleGroup](#rulegroup)
 * [Rules](#rules)
 * [RulesAlert](#rulesalert)
+* [SafeTLSConfig](#safetlsconfig)
 * [SecretOrConfigMap](#secretorconfigmap)
 * [ServiceMonitor](#servicemonitor)
 * [ServiceMonitorList](#servicemonitorlist)
@@ -58,10 +60,25 @@ This Document documents the types introduced by the Prometheus Operator to be co
 * [StorageSpec](#storagespec)
 * [TLSConfig](#tlsconfig)
 * [ThanosSpec](#thanosspec)
+* [WebSpec](#webspec)
 * [ThanosRuler](#thanosruler)
 * [ThanosRulerList](#thanosrulerlist)
 * [ThanosRulerSpec](#thanosrulerspec)
 * [ThanosRulerStatus](#thanosrulerstatus)
+* [AlertmanagerConfig](#alertmanagerconfig)
+* [AlertmanagerConfigList](#alertmanagerconfiglist)
+* [AlertmanagerConfigSpec](#alertmanagerconfigspec)
+* [HTTPConfig](#httpconfig)
+* [InhibitRule](#inhibitrule)
+* [Matcher](#matcher)
+* [OpsGenieConfig](#opsgenieconfig)
+* [OpsGenieConfigDetail](#opsgenieconfigdetail)
+* [OpsGenieConfigResponder](#opsgenieconfigresponder)
+* [PagerDutyConfig](#pagerdutyconfig)
+* [PagerDutyConfigDetail](#pagerdutyconfigdetail)
+* [Receiver](#receiver)
+* [Route](#route)
+* [WebhookConfig](#webhookconfig)
 
 ## APIServerConfig
 
@@ -158,6 +175,7 @@ AlertmanagerSpec is a specification of the desired behavior of the Alertmanager 
 | resources | Define resources requests and limits for single Pods. | [v1.ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#resourcerequirements-v1-core) | false |
 | affinity | If specified, the pod's scheduling constraints. | *v1.Affinity | false |
 | tolerations | If specified, the pod's tolerations. | []v1.Toleration | false |
+| topologySpreadConstraints | If specified, the pod's topology spread constraints. | []v1.TopologySpreadConstraint | false |
 | securityContext | SecurityContext holds pod-level security attributes and common container settings. This defaults to the default PodSecurityContext. | *v1.PodSecurityContext | false |
 | serviceAccountName | ServiceAccountName is the name of the ServiceAccount to use to run the Prometheus Pods. | string | false |
 | listenLocal | ListenLocal makes the Alertmanager server listen on loopback, so that it does not bind against the Pod IP. Note this is only for the Alertmanager UI, not the gossip communication. | bool | false |
@@ -168,6 +186,8 @@ AlertmanagerSpec is a specification of the desired behavior of the Alertmanager 
 | clusterAdvertiseAddress | ClusterAdvertiseAddress is the explicit address to advertise in cluster. Needs to be provided for non RFC1918 [1] (public) addresses. [1] RFC1918: https://tools.ietf.org/html/rfc1918 | string | false |
 | portName | Port name used for the pods and governing service. This defaults to web | string | false |
 | forceEnableClusterMode | ForceEnableClusterMode ensures Alertmanager does not deactivate the cluster mode when running with a single replica. Use case is e.g. spanning an Alertmanager cluster across Kubernetes clusters with a single replica in each. | bool | false |
+| alertmanagerConfigSelector | AlertmanagerConfigs to be selected for to merge and configure Alertmanager with. | *[metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | false |
+| alertmanagerConfigNamespaceSelector | Namespaces to be selected for AlertmanagerConfig discovery. If nil, only check own namespace. | *[metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -279,11 +299,28 @@ PodMetricsEndpoint defines a scrapeable endpoint of a Kubernetes Pod serving Pro
 | params | Optional HTTP URL parameters | map[string][]string | false |
 | interval | Interval at which metrics should be scraped | string | false |
 | scrapeTimeout | Timeout after which the scrape is ended | string | false |
+| tlsConfig | TLS configuration to use when scraping the endpoint. | *[PodMetricsEndpointTLSConfig](#podmetricsendpointtlsconfig) | false |
+| bearerTokenSecret | Secret to mount to read bearer token for scraping targets. The secret needs to be in the same namespace as the pod monitor and accessible by the Prometheus Operator. | [v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
 | honorLabels | HonorLabels chooses the metric's labels on collisions with target labels. | bool | false |
 | honorTimestamps | HonorTimestamps controls whether Prometheus respects the timestamps present in scraped data. | *bool | false |
+| basicAuth | BasicAuth allow an endpoint to authenticate over basic authentication. More info: https://prometheus.io/docs/operating/configuration/#endpoint | *[BasicAuth](#basicauth) | false |
 | metricRelabelings | MetricRelabelConfigs to apply to samples before ingestion. | []*[RelabelConfig](#relabelconfig) | false |
 | relabelings | RelabelConfigs to apply to samples before ingestion. More info: https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config | []*[RelabelConfig](#relabelconfig) | false |
 | proxyUrl | ProxyURL eg http://proxyserver:2195 Directs scrapes to proxy through this endpoint. | *string | false |
+
+[Back to TOC](#table-of-contents)
+
+## PodMetricsEndpointTLSConfig
+
+PodMetricsEndpointTLSConfig specifies TLS configuration parameters.
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| ca | Struct containing the CA cert to use for the targets. | SecretOrConfigMap | false |
+| cert | Struct containing the client cert file for the targets. | SecretOrConfigMap | false |
+| keySecret | Secret containing the client key file for the targets. | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| serverName | Used to verify the hostname for the targets. | string | false |
+| insecureSkipVerify | Disable target certificate validation. | bool | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -321,6 +358,7 @@ PodMonitorSpec contains specification parameters for a PodMonitor.
 | selector | Selector to select Pod objects. | [metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | true |
 | namespaceSelector | Selector to select which namespaces the Endpoints objects are discovered from. | [NamespaceSelector](#namespaceselector) | false |
 | sampleLimit | SampleLimit defines per-scrape limit on number of scraped samples that will be accepted. | uint64 | false |
+| targetLimit | TargetLimit defines a limit on the number of scraped targets that will be accepted. | uint64 | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -341,7 +379,7 @@ ProbeList is a list of Probes.
 
 | Field | Description | Scheme | Required |
 | ----- | ----------- | ------ | -------- |
-| metadata | Standard list metadata More info: https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#metadata | [metav1.ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#listmeta-v1-meta) | false |
+| metadata | Standard list metadata More info: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#metadata | [metav1.ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#listmeta-v1-meta) | false |
 | items | List of Probes | []*[Probe](#probe) | true |
 
 [Back to TOC](#table-of-contents)
@@ -514,6 +552,7 @@ PrometheusSpec is a specification of the desired behavior of the Prometheus clus
 | storage | Storage spec to specify how storage shall be used. | *[StorageSpec](#storagespec) | false |
 | volumes | Volumes allows configuration of additional volumes on the output StatefulSet definition. Volumes specified will be appended to other volumes that are generated as a result of StorageSpec objects. | []v1.Volume | false |
 | volumeMounts | VolumeMounts allows configuration of additional VolumeMounts on the output StatefulSet definition. VolumeMounts specified will be appended to other VolumeMounts in the prometheus container, that are generated as a result of StorageSpec objects. | []v1.VolumeMount | false |
+| web | WebSpec defines the web command line flags when starting Prometheus. | *[WebSpec](#webspec) | false |
 | ruleSelector | A selector to select which PrometheusRules to mount for loading alerting/recording rules from. Until (excluding) Prometheus Operator v0.24.0 Prometheus Operator will migrate any legacy rule ConfigMaps to PrometheusRule custom resources selected by RuleSelector. Make sure it does not match any config maps that you do not want to be migrated. | *[metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | false |
 | ruleNamespaceSelector | Namespaces to be selected for PrometheusRules discovery. If unspecified, only the same namespace as the Prometheus object is in is used. | *[metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | false |
 | alerting | Define details regarding alerting. | *[AlertingSpec](#alertingspec) | false |
@@ -524,6 +563,7 @@ PrometheusSpec is a specification of the desired behavior of the Prometheus clus
 | configMaps | ConfigMaps is a list of ConfigMaps in the same namespace as the Prometheus object, which shall be mounted into the Prometheus Pods. The ConfigMaps are mounted into /etc/prometheus/configmaps/<configmap-name>. | []string | false |
 | affinity | If specified, the pod's scheduling constraints. | *v1.Affinity | false |
 | tolerations | If specified, the pod's tolerations. | []v1.Toleration | false |
+| topologySpreadConstraints | If specified, the pod's topology spread constraints. | []v1.TopologySpreadConstraint | false |
 | remoteWrite | If specified, the remote_write spec. This is an experimental feature, it may change in any upcoming release in a breaking way. | [][RemoteWriteSpec](#remotewritespec) | false |
 | remoteRead | If specified, the remote_read spec. This is an experimental feature, it may change in any upcoming release in a breaking way. | [][RemoteReadSpec](#remotereadspec) | false |
 | securityContext | SecurityContext holds pod-level security attributes and common container settings. This defaults to the default PodSecurityContext. | *v1.PodSecurityContext | false |
@@ -546,6 +586,7 @@ PrometheusSpec is a specification of the desired behavior of the Prometheus clus
 | queryLogFile | QueryLogFile specifies the file to which PromQL queries are logged. Note that this location must be writable, and can be persisted using an attached volume. Alternatively, the location can be set to a stdout location such as `/dev/stdout` to log querie information to the default Prometheus log stream. This is only available in versions of Prometheus >= 2.16.0. For more details, see the Prometheus docs (https://prometheus.io/docs/guides/query-log/) | string | false |
 | enforcedSampleLimit | EnforcedSampleLimit defines global limit on number of scraped samples that will be accepted. This overrides any SampleLimit set per ServiceMonitor or/and PodMonitor. It is meant to be used by admins to enforce the SampleLimit to keep overall number of samples/series under the desired limit. Note that if SampleLimit is lower that value will be taken instead. | *uint64 | false |
 | allowOverlappingBlocks | AllowOverlappingBlocks enables vertical compaction and vertical query merge in Prometheus. This is still experimental in Prometheus so it may change in any upcoming release. | bool | false |
+| enforcedTargetLimit | EnforcedTargetLimit defines a global limit on the number of scraped targets. This overrides any TargetLimit set per ServiceMonitor or/and PodMonitor. It is meant to be used by admins to enforce the TargetLimit to keep overall number of targets under the desired limit. Note that if TargetLimit is higher that value will be taken instead. | *uint64 | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -697,6 +738,20 @@ RuleGroup is a list of sequentially evaluated recording and alerting rules. Note
 
 [Back to TOC](#table-of-contents)
 
+## SafeTLSConfig
+
+SafeTLSConfig specifies safe TLS configuration parameters.
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| ca | Struct containing the CA cert to use for the targets. | [SecretOrConfigMap](#secretorconfigmap) | false |
+| cert | Struct containing the client cert file for the targets. | [SecretOrConfigMap](#secretorconfigmap) | false |
+| keySecret | Secret containing the client key file for the targets. | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| serverName | Used to verify the hostname for the targets. | string | false |
+| insecureSkipVerify | Disable target certificate validation. | bool | false |
+
+[Back to TOC](#table-of-contents)
+
 ## SecretOrConfigMap
 
 SecretOrConfigMap allows to specify data as a Secret or ConfigMap. Fields are mutually exclusive.
@@ -743,6 +798,7 @@ ServiceMonitorSpec contains specification parameters for a ServiceMonitor.
 | selector | Selector to select Endpoints objects. | [metav1.LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#labelselector-v1-meta) | true |
 | namespaceSelector | Selector to select which namespaces the Endpoints objects are discovered from. | [NamespaceSelector](#namespaceselector) | false |
 | sampleLimit | SampleLimit defines per-scrape limit on number of scraped samples that will be accepted. | uint64 | false |
+| targetLimit | TargetLimit defines a limit on the number of scraped targets that will be accepted. | uint64 | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -760,18 +816,18 @@ StorageSpec defines the configured storage for a group Prometheus servers. If ne
 
 ## TLSConfig
 
-TLSConfig specifies TLS configuration parameters.
+TLSConfig extends the safe TLS configuration with file parameters.
 
 | Field | Description | Scheme | Required |
 | ----- | ----------- | ------ | -------- |
-| caFile | Path to the CA cert in the Prometheus container to use for the targets. | string | false |
-| ca | Stuct containing the CA cert to use for the targets. | [SecretOrConfigMap](#secretorconfigmap) | false |
-| certFile | Path to the client cert file in the Prometheus container for the targets. | string | false |
-| cert | Struct containing the client cert file for the targets. | [SecretOrConfigMap](#secretorconfigmap) | false |
-| keyFile | Path to the client key file in the Prometheus container for the targets. | string | false |
+| ca | Struct containing the CA cert to use for the targets. | SecretOrConfigMap | false |
+| cert | Struct containing the client cert file for the targets. | SecretOrConfigMap | false |
 | keySecret | Secret containing the client key file for the targets. | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
 | serverName | Used to verify the hostname for the targets. | string | false |
 | insecureSkipVerify | Disable target certificate validation. | bool | false |
+| caFile | Path to the CA cert in the Prometheus container to use for the targets. | string | false |
+| certFile | Path to the client cert file in the Prometheus container for the targets. | string | false |
+| keyFile | Path to the client key file in the Prometheus container for the targets. | string | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -794,6 +850,16 @@ ThanosSpec defines parameters for a Prometheus server within a Thanos deployment
 | logLevel | LogLevel for Thanos sidecar to be configured with. | string | false |
 | logFormat | LogFormat for Thanos sidecar to be configured with. | string | false |
 | minTime | MinTime for Thanos sidecar to be configured with. Option can be a constant time in RFC3339 format or time duration relative to current time, such as -1d or 2h45m. Valid duration units are ms, s, m, h, d, w, y. | string | false |
+
+[Back to TOC](#table-of-contents)
+
+## WebSpec
+
+WebSpec defines the query command line flags when starting Prometheus.
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| pageTitle | The prometheus web page title | *string | false |
 
 [Back to TOC](#table-of-contents)
 
@@ -835,6 +901,7 @@ ThanosRulerSpec is a specification of the desired behavior of the ThanosRuler. M
 | resources | Resources defines the resource requirements for single Pods. If not provided, no requests/limits will be set | [v1.ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#resourcerequirements-v1-core) | false |
 | affinity | If specified, the pod's scheduling constraints. | *v1.Affinity | false |
 | tolerations | If specified, the pod's tolerations. | []v1.Toleration | false |
+| topologySpreadConstraints | If specified, the pod's topology spread constraints. | []v1.TopologySpreadConstraint | false |
 | securityContext | SecurityContext holds pod-level security attributes and common container settings. This defaults to the default PodSecurityContext. | *v1.PodSecurityContext | false |
 | priorityClassName | Priority class assigned to the Pods | string | false |
 | serviceAccountName | ServiceAccountName is the name of the ServiceAccount to use to run the Thanos Ruler Pods. | string | false |
@@ -878,5 +945,198 @@ ThanosRulerStatus is the most recent observed status of the ThanosRuler. Read-on
 | updatedReplicas | Total number of non-terminated pods targeted by this ThanosRuler deployment that have the desired version spec. | int32 | true |
 | availableReplicas | Total number of available pods (ready for at least minReadySeconds) targeted by this ThanosRuler deployment. | int32 | true |
 | unavailableReplicas | Total number of unavailable pods targeted by this ThanosRuler deployment. | int32 | true |
+
+[Back to TOC](#table-of-contents)
+
+## AlertmanagerConfig
+
+AlertmanagerConfig defines a namespaced AlertmanagerConfig to be aggregated across multiple namespaces configuring one Alertmanager.
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| metadata |  | [metav1.ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#objectmeta-v1-meta) | false |
+| spec |  | [AlertmanagerConfigSpec](#alertmanagerconfigspec) | true |
+
+[Back to TOC](#table-of-contents)
+
+## AlertmanagerConfigList
+
+AlertmanagerConfigList is a list of AlertmanagerConfig.
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| metadata | Standard list metadata More info: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#metadata | [metav1.ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#listmeta-v1-meta) | false |
+| items | List of AlertmanagerConfig | []*[AlertmanagerConfig](#alertmanagerconfig) | true |
+
+[Back to TOC](#table-of-contents)
+
+## AlertmanagerConfigSpec
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| route |  | *[Route](#route) | false |
+| receivers |  | [][Receiver](#receiver) | false |
+| inhibitRules |  | [][InhibitRule](#inhibitrule) | false |
+
+[Back to TOC](#table-of-contents)
+
+## HTTPConfig
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| basicAuth |  | *monitoringv1.BasicAuth | false |
+| bearerTokenSecret |  | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| tlsConfig |  | *monitoringv1.SafeTLSConfig | false |
+| proxyURL |  | *string | false |
+
+[Back to TOC](#table-of-contents)
+
+## InhibitRule
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| targetMatch |  | [][Matcher](#matcher) | false |
+| sourceMatch |  | [][Matcher](#matcher) | false |
+| equal |  | []string | false |
+
+[Back to TOC](#table-of-contents)
+
+## Matcher
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| name |  | string | true |
+| value |  | string | true |
+| regex |  | bool | false |
+
+[Back to TOC](#table-of-contents)
+
+## OpsGenieConfig
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| sendResolved |  | *bool | false |
+| apiKey |  | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| apiURL |  | *string | false |
+| message |  | *string | false |
+| description |  | *string | false |
+| source |  | *string | false |
+| tags |  | *string | false |
+| note |  | *string | false |
+| priority |  | *string | false |
+| details |  | [][OpsGenieConfigDetail](#opsgenieconfigdetail) | false |
+| responders |  | [][OpsGenieConfigResponder](#opsgenieconfigresponder) | false |
+| httpConfig |  | *[HTTPConfig](#httpconfig) | false |
+
+[Back to TOC](#table-of-contents)
+
+## OpsGenieConfigDetail
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| key |  | string | true |
+| value |  | string | true |
+
+[Back to TOC](#table-of-contents)
+
+## OpsGenieConfigResponder
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| id |  | string | false |
+| name |  | string | false |
+| username |  | string | false |
+| type |  | string | false |
+
+[Back to TOC](#table-of-contents)
+
+## PagerDutyConfig
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| sendResolved |  | *bool | false |
+| routingKey |  | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| serviceKey |  | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| url |  | *string | false |
+| client |  | *string | false |
+| clientURL |  | *string | false |
+| description |  | *string | false |
+| severity |  | *string | false |
+| class |  | *string | false |
+| group |  | *string | false |
+| component |  | *string | false |
+| details |  | [][PagerDutyConfigDetail](#pagerdutyconfigdetail) | false |
+| httpConfig |  | *[HTTPConfig](#httpconfig) | false |
+
+[Back to TOC](#table-of-contents)
+
+## PagerDutyConfigDetail
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| key |  | string | true |
+| value |  | string | true |
+
+[Back to TOC](#table-of-contents)
+
+## Receiver
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| name |  | string | true |
+| opsgenieConfigs |  | [][OpsGenieConfig](#opsgenieconfig) | false |
+| pagerDutyConfigs |  | [][PagerDutyConfig](#pagerdutyconfig) | false |
+| webhookConfigs |  | [][WebhookConfig](#webhookconfig) | false |
+
+[Back to TOC](#table-of-contents)
+
+## Route
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| receiver |  | string | false |
+| groupBy |  | []string | false |
+| groupWait |  | string | false |
+| groupInterval |  | string | false |
+| repeatInterval |  | string | false |
+| matchers |  | [][Matcher](#matcher) | false |
+| continue |  | bool | false |
+| routes |  | [][Route](#route) | false |
+
+[Back to TOC](#table-of-contents)
+
+## WebhookConfig
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| sendResolved |  | *bool | false |
+| url |  | *string | false |
+| urlSecret |  | *[v1.SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.17/#secretkeyselector-v1-core) | false |
+| httpConfig |  | *[HTTPConfig](#httpconfig) | false |
+| maxAlerts |  | *int32 | false |
 
 [Back to TOC](#table-of-contents)

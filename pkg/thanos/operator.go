@@ -223,7 +223,7 @@ func New(ctx context.Context, conf operator.Config, logger log.Logger, r prometh
 }
 
 // waitForCacheSync waits for the informers' caches to be synced.
-func (o *Operator) waitForCacheSync(stopc <-chan struct{}) error {
+func (o *Operator) waitForCacheSync(ctx context.Context) error {
 	ok := true
 
 	for _, infs := range []struct {
@@ -236,33 +236,28 @@ func (o *Operator) waitForCacheSync(stopc <-chan struct{}) error {
 		{"StatefulSet", o.ssetInfs},
 	} {
 		for _, inf := range infs.informersForResource.GetInformers() {
-			if !cache.WaitForCacheSync(stopc, inf.Informer().HasSynced) {
-				level.Error(o.logger).Log("msg", fmt.Sprintf("failed to sync %s cache", infs.name))
+			if !operator.WaitForCacheSync(ctx, log.With(o.logger, "informer", infs.name), inf.Informer()) {
 				ok = false
-			} else {
-				level.Debug(o.logger).Log("msg", fmt.Sprintf("successfully synced %s cache", infs.name))
 			}
 		}
 	}
 
-	informers := []struct {
+	for _, inf := range []struct {
 		name     string
 		informer cache.SharedIndexInformer
 	}{
 		{"ThanosRulerNamespace", o.nsThanosRulerInf},
 		{"RuleNamespace", o.nsRuleInf},
-	}
-	for _, inf := range informers {
-		if !cache.WaitForCacheSync(stopc, inf.informer.HasSynced) {
-			level.Error(o.logger).Log("msg", fmt.Sprintf("failed to sync %s cache", inf.name))
+	} {
+		if !operator.WaitForCacheSync(ctx, log.With(o.logger, "informer", inf.name), inf.informer) {
 			ok = false
-		} else {
-			level.Debug(o.logger).Log("msg", fmt.Sprintf("successfully synced %s cache", inf.name))
 		}
 	}
+
 	if !ok {
 		return errors.New("failed to sync caches")
 	}
+
 	level.Info(o.logger).Log("msg", "successfully synced all caches")
 	return nil
 }
@@ -326,11 +321,12 @@ func (o *Operator) Run(ctx context.Context) error {
 		go o.nsThanosRulerInf.Run(ctx.Done())
 	}
 	go o.ssetInfs.Start(ctx.Done())
-	if err := o.waitForCacheSync(ctx.Done()); err != nil {
+	if err := o.waitForCacheSync(ctx); err != nil {
 		return err
 	}
 	o.addHandlers()
 
+	o.metrics.Ready().Set(1)
 	<-ctx.Done()
 	return nil
 }
@@ -565,6 +561,7 @@ func (o *Operator) processNextWorkItem(ctx context.Context) bool {
 
 	o.metrics.ReconcileCounter().Inc()
 	err := o.sync(ctx, key.(string))
+	o.metrics.SetSyncStatus(key.(string), err == nil)
 	if err == nil {
 		o.queue.Forget(key)
 		return true
@@ -580,6 +577,7 @@ func (o *Operator) processNextWorkItem(ctx context.Context) bool {
 func (o *Operator) sync(ctx context.Context, key string) error {
 	trobj, err := o.thanosRulerInfs.Get(key)
 	if apierrors.IsNotFound(err) {
+		o.metrics.ForgetObject(key)
 		// Dependent resources are cleaned up by K8s via OwnerReferences
 		return nil
 	}
@@ -799,9 +797,7 @@ func (o *Operator) enqueueForNamespace(store cache.Store, nsName string) {
 	}
 	ns := nsObject.(*v1.Namespace)
 
-	objs, err := o.thanosRulerInfs.List(labels.Everything())
-
-	for _, obj := range objs {
+	err = o.thanosRulerInfs.ListAll(labels.Everything(), func(obj interface{}) {
 		// Check for ThanosRuler instances in the namespace.
 		tr := obj.(*monitoringv1.ThanosRuler)
 		if tr.Namespace == nsName {
@@ -824,7 +820,7 @@ func (o *Operator) enqueueForNamespace(store cache.Store, nsName string) {
 			o.enqueue(tr)
 			return
 		}
-	}
+	})
 	if err != nil {
 		level.Error(o.logger).Log(
 			"msg", "listing all ThanosRuler instances from cache failed",

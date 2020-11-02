@@ -428,7 +428,7 @@ func TestListenLocal(t *testing.T) {
 				Command: []string{
 					`sh`,
 					`-c`,
-					`if [ -x "$(command -v curl)" ]; then curl http://localhost:9090/-/ready; elif [ -x "$(command -v wget)" ]; then wget -q -O /dev/null http://localhost:9090/-/ready; else exit 1; fi`,
+					`if [ -x "$(command -v curl)" ]; then exec curl http://localhost:9090/-/ready; elif [ -x "$(command -v wget)" ]; then exec wget -q -O /dev/null http://localhost:9090/-/ready; else exit 1; fi`,
 				},
 			},
 		},
@@ -438,25 +438,6 @@ func TestListenLocal(t *testing.T) {
 	}
 	if !reflect.DeepEqual(actualReadinessProbe, expectedReadinessProbe) {
 		t.Fatalf("Readiness probe doesn't match expected. \n\nExpected: %+v\n\nGot: %+v", expectedReadinessProbe, actualReadinessProbe)
-	}
-
-	actualLivenessProbe := sset.Spec.Template.Spec.Containers[0].LivenessProbe
-	expectedLivenessProbe := &v1.Probe{
-		Handler: v1.Handler{
-			Exec: &v1.ExecAction{
-				Command: []string{
-					`sh`,
-					`-c`,
-					`if [ -x "$(command -v curl)" ]; then curl http://localhost:9090/-/healthy; elif [ -x "$(command -v wget)" ]; then wget -q -O /dev/null http://localhost:9090/-/healthy; else exit 1; fi`,
-				},
-			},
-		},
-		TimeoutSeconds:   3,
-		PeriodSeconds:    5,
-		FailureThreshold: 6,
-	}
-	if !reflect.DeepEqual(actualLivenessProbe, expectedLivenessProbe) {
-		t.Fatalf("Liveness probe doesn't match expected. \n\nExpected: %v\n\nGot: %v", expectedLivenessProbe, actualLivenessProbe)
 	}
 
 	if len(sset.Spec.Template.Spec.Containers[0].Ports) != 0 {
@@ -782,12 +763,24 @@ func TestThanosNoObjectStorage(t *testing.T) {
 	}
 
 	if sset.Spec.Template.Spec.Containers[2].Name != "thanos-sidecar" {
-		t.Fatalf("expected 3rd containers to be thanos-sidecar, got %s", sset.Spec.Template.Spec.Containers[2].Name)
+		t.Fatalf("expected 3rd container to be thanos-sidecar, got %s", sset.Spec.Template.Spec.Containers[2].Name)
 	}
 
 	for _, arg := range sset.Spec.Template.Spec.Containers[0].Args {
 		if strings.HasPrefix(arg, "--storage.tsdb.max-block-duration=2h") {
-			t.Fatal("Prometheus compaction should be enabled")
+			t.Fatal("Prometheus compaction should be disabled")
+		}
+	}
+
+	for _, arg := range sset.Spec.Template.Spec.Containers[2].Args {
+		if strings.HasPrefix(arg, "--tsdb.path=") {
+			t.Fatal("--tsdb.path argument should not be given to the Thanos sidecar")
+		}
+	}
+
+	for _, vol := range sset.Spec.Template.Spec.Containers[2].VolumeMounts {
+		if vol.MountPath == storageDir {
+			t.Fatal("Prometheus data volume should not be mounted in the Thanos sidecar")
 		}
 	}
 }
@@ -853,6 +846,32 @@ func TestThanosObjectStorage(t *testing.T) {
 		}
 		if !containsArg {
 			t.Fatalf("Prometheus is missing expected argument: %s", expectedArg)
+		}
+	}
+
+	{
+		var found bool
+		for _, arg := range sset.Spec.Template.Spec.Containers[2].Args {
+			if strings.HasPrefix(arg, "--tsdb.path=") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("--tsdb.path argument should be given to the Thanos sidecar, got %q", strings.Join(sset.Spec.Template.Spec.Containers[3].Args, " "))
+		}
+	}
+
+	{
+		var found bool
+		for _, vol := range sset.Spec.Template.Spec.Containers[2].VolumeMounts {
+			if vol.MountPath == storageDir {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("Prometheus data volume should be mounted in the Thanos sidecar")
 		}
 	}
 }
@@ -1199,5 +1218,31 @@ func TestTerminationPolicy(t *testing.T) {
 		if c.TerminationMessagePolicy != v1.TerminationMessageFallbackToLogsOnError {
 			t.Fatalf("Unexpected TermintationMessagePolicy. Expected %v got %v", v1.TerminationMessageFallbackToLogsOnError, c.TerminationMessagePolicy)
 		}
+	}
+}
+
+func TestWebPageTitle(t *testing.T) {
+	var pageTitle string = "my-page-title"
+	sset, err := makeStatefulSet(monitoringv1.Prometheus{
+		Spec: monitoringv1.PrometheusSpec{
+			Web: &monitoringv1.WebSpec{
+				PageTitle: &pageTitle,
+			},
+		},
+	}, defaultTestConfig, nil, "")
+
+	if err != nil {
+		t.Fatalf("Unexpected error while making StatefulSet: %v", err)
+	}
+
+	found := false
+	for _, flag := range sset.Spec.Template.Spec.Containers[0].Args {
+		if flag == "--web.page-title=my-page-title" {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Fatal("Prometheus web page title is not correctly set.")
 	}
 }

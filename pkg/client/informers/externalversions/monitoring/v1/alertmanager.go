@@ -17,7 +17,6 @@
 package v1
 
 import (
-	"context"
 	time "time"
 
 	monitoringv1 "github.com/coreos/prometheus-operator/pkg/apis/monitoring/v1"
@@ -60,13 +59,13 @@ func NewFilteredAlertmanagerInformer(client versioned.Interface, namespace strin
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.MonitoringV1().Alertmanagers(namespace).List(context.TODO(), options)
+				return client.MonitoringV1().Alertmanagers(namespace).List(options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.MonitoringV1().Alertmanagers(namespace).Watch(context.TODO(), options)
+				return client.MonitoringV1().Alertmanagers(namespace).Watch(options)
 			},
 		},
 		&monitoringv1.Alertmanager{},

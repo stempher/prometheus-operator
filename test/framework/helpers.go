@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -50,7 +49,7 @@ func PathToOSFile(relativPath string) (*os.File, error) {
 // container to pass its readiness check.
 func WaitForPodsReady(kubeClient kubernetes.Interface, namespace string, timeout time.Duration, expectedReplicas int, opts metav1.ListOptions) error {
 	return wait.Poll(time.Second, timeout, func() (bool, error) {
-		pl, err := kubeClient.CoreV1().Pods(namespace).List(context.TODO(), opts)
+		pl, err := kubeClient.CoreV1().Pods(namespace).List(opts)
 		if err != nil {
 			return false, err
 		}
@@ -76,7 +75,7 @@ func WaitForPodsReady(kubeClient kubernetes.Interface, namespace string, timeout
 
 func WaitForPodsRunImage(kubeClient kubernetes.Interface, namespace string, expectedReplicas int, image string, opts metav1.ListOptions) error {
 	return wait.Poll(time.Second, time.Minute*5, func() (bool, error) {
-		pl, err := kubeClient.CoreV1().Pods(namespace).List(context.TODO(), opts)
+		pl, err := kubeClient.CoreV1().Pods(namespace).List(opts)
 		if err != nil {
 			return false, err
 		}
@@ -129,7 +128,7 @@ func GetLogs(kubeClient kubernetes.Interface, namespace string, podName, contain
 		Namespace(namespace).
 		Name(podName).SubResource("log").
 		Param("container", containerName).
-		Do(context.TODO()).
+		Do().
 		Raw()
 	if err != nil {
 		return "", err

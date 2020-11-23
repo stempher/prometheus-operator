@@ -15,7 +15,6 @@
 package e2e
 
 import (
-	"context"
 	"testing"
 
 	api_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,7 +37,7 @@ func testAlertmanagerInstanceNamespaces_AllNs(t *testing.T) {
 
 	am := framework.MakeBasicAlertmanager("non-instance", 3)
 	am.Namespace = nonInstanceNs
-	_, err = framework.MonClientV1.Alertmanagers(nonInstanceNs).Create(context.TODO(), am, metav1.CreateOptions{})
+	_, err = framework.MonClientV1.Alertmanagers(nonInstanceNs).Create(am)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +48,7 @@ func testAlertmanagerInstanceNamespaces_AllNs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sts, err := framework.KubeClient.AppsV1().StatefulSets(nonInstanceNs).Get(context.TODO(), "alertmanager-instance", metav1.GetOptions{})
+	sts, err := framework.KubeClient.AppsV1().StatefulSets(nonInstanceNs).Get("alertmanager-instance", metav1.GetOptions{})
 	if !api_errors.IsNotFound(err) {
 		t.Fatalf("expected not to find an Alertmanager statefulset, but did: %v/%v", sts.Namespace, sts.Name)
 	}

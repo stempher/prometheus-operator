@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -29,11 +28,11 @@ import (
 )
 
 func GetDeployment(kubeCilent kubernetes.Interface, ns, name string) (*appsv1.Deployment, error) {
-	return kubeCilent.AppsV1().Deployments(ns).Get(context.TODO(), name, metav1.GetOptions{})
+	return kubeCilent.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
 }
 
 func UpdateDeployment(kubeCilent kubernetes.Interface, deployment *appsv1.Deployment) (*appsv1.Deployment, error) {
-	return kubeCilent.AppsV1().Deployments(deployment.Namespace).Update(context.TODO(), deployment, metav1.UpdateOptions{})
+	return kubeCilent.AppsV1().Deployments(deployment.Namespace).Update(deployment)
 }
 
 func MakeDeployment(pathToYaml string) (*appsv1.Deployment, error) {
@@ -51,7 +50,7 @@ func MakeDeployment(pathToYaml string) (*appsv1.Deployment, error) {
 
 func CreateDeployment(kubeClient kubernetes.Interface, namespace string, d *appsv1.Deployment) error {
 	d.Namespace = namespace
-	_, err := kubeClient.AppsV1().Deployments(namespace).Create(context.TODO(), d, metav1.CreateOptions{})
+	_, err := kubeClient.AppsV1().Deployments(namespace).Create(d)
 	if err != nil {
 		return errors.Wrap(err, fmt.Sprintf("failed to create deployment %s", d.Name))
 	}
@@ -59,7 +58,7 @@ func CreateDeployment(kubeClient kubernetes.Interface, namespace string, d *apps
 }
 
 func DeleteDeployment(kubeClient kubernetes.Interface, namespace, name string) error {
-	d, err := kubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	d, err := kubeClient.AppsV1().Deployments(namespace).Get(name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -67,18 +66,18 @@ func DeleteDeployment(kubeClient kubernetes.Interface, namespace, name string) e
 	zero := int32(0)
 	d.Spec.Replicas = &zero
 
-	d, err = kubeClient.AppsV1().Deployments(namespace).Update(context.TODO(), d, metav1.UpdateOptions{})
+	d, err = kubeClient.AppsV1().Deployments(namespace).Update(d)
 	if err != nil {
 		return err
 	}
-	return kubeClient.AppsV1beta2().Deployments(namespace).Delete(context.TODO(), d.Name, metav1.DeleteOptions{})
+	return kubeClient.AppsV1beta2().Deployments(namespace).Delete(d.Name, &metav1.DeleteOptions{})
 }
 
 func WaitUntilDeploymentGone(kubeClient kubernetes.Interface, namespace, name string, timeout time.Duration) error {
 	return wait.Poll(time.Second, timeout, func() (bool, error) {
 		_, err := kubeClient.
 			AppsV1beta2().Deployments(namespace).
-			Get(context.TODO(), name, metav1.GetOptions{})
+			Get(name, metav1.GetOptions{})
 
 		if err != nil {
 			if apierrors.IsNotFound(err) {

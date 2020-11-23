@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	"os"
 	"time"
 
@@ -38,7 +37,7 @@ func createReplicationControllerViaYml(kubeClient kubernetes.Interface, namespac
 		return err
 	}
 
-	_, err = kubeClient.CoreV1().ReplicationControllers(namespace).Create(context.TODO(), &rC, metav1.CreateOptions{})
+	_, err = kubeClient.CoreV1().ReplicationControllers(namespace).Create(&rC)
 	if err != nil {
 		return err
 	}
@@ -62,7 +61,7 @@ func deleteReplicationControllerViaYml(kubeClient kubernetes.Interface, namespac
 		return err
 	}
 
-	if err := kubeClient.CoreV1().ReplicationControllers(namespace).Delete(context.TODO(), rC.Name, metav1.DeleteOptions{}); err != nil {
+	if err := kubeClient.CoreV1().ReplicationControllers(namespace).Delete(rC.Name, nil); err != nil {
 		return err
 	}
 
@@ -73,13 +72,13 @@ func scaleDownReplicationController(kubeClient kubernetes.Interface, namespace s
 	*rC.Spec.Replicas = 0
 	rCAPI := kubeClient.CoreV1().ReplicationControllers(namespace)
 
-	_, err := kubeClient.CoreV1().ReplicationControllers(namespace).Update(context.TODO(), &rC, metav1.UpdateOptions{})
+	_, err := kubeClient.CoreV1().ReplicationControllers(namespace).Update(&rC)
 	if err != nil {
 		return err
 	}
 
 	return wait.Poll(time.Second, time.Minute*5, func() (bool, error) {
-		currentRC, err := rCAPI.Get(context.TODO(), rC.Name, metav1.GetOptions{})
+		currentRC, err := rCAPI.Get(rC.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}

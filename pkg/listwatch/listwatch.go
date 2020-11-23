@@ -15,7 +15,6 @@
 package listwatch
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -83,7 +82,7 @@ func NewFilteredUnprivilegedNamespaceListWatchFromClient(l log.Logger, c cache.G
 				Resource("namespaces").
 				Name(name).
 				VersionedParams(&options, scheme.ParameterCodec).
-				Do(context.TODO()).
+				Do().
 				Into(result)
 			if err != nil {
 				return nil, err

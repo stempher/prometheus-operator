@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	"fmt"
 	"github.com/pkg/errors"
 	"k8s.io/api/admissionregistration/v1beta1"
@@ -33,7 +32,7 @@ func CreateMutatingHook(kubeClient kubernetes.Interface, certBytes []byte, names
 	h.Webhooks[0].ClientConfig.Service.Namespace = namespace
 	h.Webhooks[0].ClientConfig.CABundle = certBytes
 
-	_, err = kubeClient.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(context.TODO(), h, metav1.CreateOptions{})
+	_, err = kubeClient.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(h)
 	if err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf("failed to create mutating webhook %s", h.Name))
 	}
@@ -52,7 +51,7 @@ func CreateValidatingHook(kubeClient kubernetes.Interface, certBytes []byte, nam
 	h.Webhooks[0].ClientConfig.Service.Namespace = namespace
 	h.Webhooks[0].ClientConfig.CABundle = certBytes
 
-	_, err = kubeClient.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(context.TODO(), h, metav1.CreateOptions{})
+	_, err = kubeClient.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(h)
 	if err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf("failed to create validating webhook %s", h.Name))
 	}
@@ -63,11 +62,11 @@ func CreateValidatingHook(kubeClient kubernetes.Interface, certBytes []byte, nam
 }
 
 func DeleteMutatingWebhook(kubeClient kubernetes.Interface, name string) error {
-	return kubeClient.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(context.TODO(), name, metav1.DeleteOptions{})
+	return kubeClient.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(name, &metav1.DeleteOptions{})
 }
 
 func DeleteValidatingWebhook(kubeClient kubernetes.Interface, name string) error {
-	return kubeClient.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(context.TODO(), name, metav1.DeleteOptions{})
+	return kubeClient.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(name, &metav1.DeleteOptions{})
 }
 
 func parseValidatingHookYaml(pathToYaml string) (*v1beta1.ValidatingWebhookConfiguration, error) {

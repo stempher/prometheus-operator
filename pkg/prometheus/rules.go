@@ -15,7 +15,6 @@
 package prometheus
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"sort"
@@ -58,7 +57,7 @@ func (c *Operator) createOrUpdateRuleConfigMaps(p *monitoringv1.Prometheus) ([]s
 		return nil, err
 	}
 
-	currentConfigMapList, err := cClient.List(context.TODO(), prometheusRulesConfigMapSelector(p.Name))
+	currentConfigMapList, err := cClient.List(prometheusRulesConfigMapSelector(p.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +101,7 @@ func (c *Operator) createOrUpdateRuleConfigMaps(p *monitoringv1.Prometheus) ([]s
 			"prometheus", p.Name,
 		)
 		for _, cm := range newConfigMaps {
-			_, err = cClient.Create(context.TODO(), &cm, metav1.CreateOptions{})
+			_, err = cClient.Create(&cm)
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to create ConfigMap '%v'", cm.Name)
 			}
@@ -113,7 +112,7 @@ func (c *Operator) createOrUpdateRuleConfigMaps(p *monitoringv1.Prometheus) ([]s
 	// Simply deleting old ConfigMaps and creating new ones for now. Could be
 	// replaced by logic that only deletes obsolete ConfigMaps in the future.
 	for _, cm := range currentConfigMaps {
-		err := cClient.Delete(context.TODO(), cm.Name, metav1.DeleteOptions{})
+		err := cClient.Delete(cm.Name, &metav1.DeleteOptions{})
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to delete current ConfigMap '%v'", cm.Name)
 		}
@@ -125,7 +124,7 @@ func (c *Operator) createOrUpdateRuleConfigMaps(p *monitoringv1.Prometheus) ([]s
 		"prometheus", p.Name,
 	)
 	for _, cm := range newConfigMaps {
-		_, err = cClient.Create(context.TODO(), &cm, metav1.CreateOptions{})
+		_, err = cClient.Create(&cm)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to create new ConfigMap '%v'", cm.Name)
 		}

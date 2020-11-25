@@ -15,7 +15,6 @@
 package thanos
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -158,11 +157,11 @@ func New(conf prometheusoperator.Config, logger log.Logger, r prometheus.Registe
 				return &cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 						options.LabelSelector = labelThanosRulerName
-						return o.kclient.CoreV1().ConfigMaps(namespace).List(context.TODO(), options)
+						return o.kclient.CoreV1().ConfigMaps(namespace).List(options)
 					},
 					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 						options.LabelSelector = labelThanosRulerName
-						return o.kclient.CoreV1().ConfigMaps(namespace).Watch(context.TODO(), options)
+						return o.kclient.CoreV1().ConfigMaps(namespace).Watch(options)
 					},
 				}
 			}),
@@ -176,11 +175,11 @@ func New(conf prometheusoperator.Config, logger log.Logger, r prometheus.Registe
 				return &cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 						options.LabelSelector = o.config.ThanosRulerSelector
-						return o.mclient.MonitoringV1().ThanosRulers(namespace).List(context.TODO(), options)
+						return o.mclient.MonitoringV1().ThanosRulers(namespace).List(options)
 					},
 					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 						options.LabelSelector = o.config.ThanosRulerSelector
-						return o.mclient.MonitoringV1().ThanosRulers(namespace).Watch(context.TODO(), options)
+						return o.mclient.MonitoringV1().ThanosRulers(namespace).Watch(options)
 					},
 				}
 			}),
@@ -194,11 +193,9 @@ func New(conf prometheusoperator.Config, logger log.Logger, r prometheus.Registe
 			listwatch.MultiNamespaceListerWatcher(o.logger, o.config.Namespaces.AllowList, o.config.Namespaces.DenyList, func(namespace string) cache.ListerWatcher {
 				return &cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-						return mclient.MonitoringV1().PrometheusRules(namespace).List(context.TODO(), options)
+						return mclient.MonitoringV1().PrometheusRules(namespace).List(options)
 					},
-					WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-						return mclient.MonitoringV1().PrometheusRules(namespace).Watch(context.TODO(), options)
-					},
+					WatchFunc: mclient.MonitoringV1().PrometheusRules(namespace).Watch,
 				}
 			}),
 		),
@@ -615,7 +612,7 @@ func (o *Operator) sync(key string) error {
 			return errors.Wrap(err, "making thanos statefulset config failed")
 		}
 		operator.SanitizeSTS(sset)
-		if _, err := ssetClient.Create(context.TODO(), sset, metav1.CreateOptions{}); err != nil {
+		if _, err := ssetClient.Create(sset); err != nil {
 			return errors.Wrap(err, "creating thanos statefulset failed")
 		}
 		return nil
@@ -645,14 +642,14 @@ func (o *Operator) sync(key string) error {
 		return nil
 	}
 
-	_, err = ssetClient.Update(context.TODO(), sset, metav1.UpdateOptions{})
+	_, err = ssetClient.Update(sset)
 	sErr, ok := err.(*apierrors.StatusError)
 
 	if ok && sErr.ErrStatus.Code == 422 && sErr.ErrStatus.Reason == metav1.StatusReasonInvalid {
 		o.metrics.StsDeleteCreateCounter().Inc()
 		level.Info(o.logger).Log("msg", "resolving illegal update of ThanosRuler StatefulSet", "details", sErr.ErrStatus.Details)
 		propagationPolicy := metav1.DeletePropagationForeground
-		if err := ssetClient.Delete(context.TODO(), sset.GetName(), metav1.DeleteOptions{PropagationPolicy: &propagationPolicy}); err != nil {
+		if err := ssetClient.Delete(sset.GetName(), &metav1.DeleteOptions{PropagationPolicy: &propagationPolicy}); err != nil {
 			return errors.Wrap(err, "failed to delete StatefulSet to avoid forbidden action")
 		}
 		return nil
@@ -686,19 +683,19 @@ func (o *Operator) createCRDs() error {
 	crdClient := o.crdclient.ApiextensionsV1beta1().CustomResourceDefinitions()
 
 	for _, crd := range crds {
-		oldCRD, err := crdClient.Get(context.TODO(), crd.Name, metav1.GetOptions{})
+		oldCRD, err := crdClient.Get(crd.Name, metav1.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return errors.Wrapf(err, "getting CRD: %s", crd.Spec.Names.Kind)
 		}
 		if apierrors.IsNotFound(err) {
-			if _, err := crdClient.Create(context.TODO(), crd, metav1.CreateOptions{}); err != nil {
+			if _, err := crdClient.Create(crd); err != nil {
 				return errors.Wrapf(err, "creating CRD: %s", crd.Spec.Names.Kind)
 			}
 			level.Info(o.logger).Log("msg", "CRD created", "crd", crd.Spec.Names.Kind)
 		}
 		if err == nil {
 			crd.ResourceVersion = oldCRD.ResourceVersion
-			if _, err := crdClient.Update(context.TODO(), crd, metav1.UpdateOptions{}); err != nil {
+			if _, err := crdClient.Update(crd); err != nil {
 				return errors.Wrapf(err, "creating CRD: %s", crd.Spec.Names.Kind)
 			}
 			level.Info(o.logger).Log("msg", "CRD updated", "crd", crd.Spec.Names.Kind)
@@ -714,7 +711,7 @@ func (o *Operator) createCRDs() error {
 			listwatch.MultiNamespaceListerWatcher(o.logger, o.config.Namespaces.ThanosRulerAllowList, o.config.Namespaces.DenyList, func(namespace string) cache.ListerWatcher {
 				return &cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-						return o.mclient.MonitoringV1().Prometheuses(namespace).List(context.TODO(), options)
+						return o.mclient.MonitoringV1().Prometheuses(namespace).List(options)
 					},
 				}
 			}).List,
@@ -724,7 +721,7 @@ func (o *Operator) createCRDs() error {
 			listwatch.MultiNamespaceListerWatcher(o.logger, o.config.Namespaces.AllowList, o.config.Namespaces.DenyList, func(namespace string) cache.ListerWatcher {
 				return &cache.ListWatch{
 					ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-						return o.mclient.MonitoringV1().PrometheusRules(namespace).List(context.TODO(), options)
+						return o.mclient.MonitoringV1().PrometheusRules(namespace).List(options)
 					},
 				}
 			}).List,
@@ -776,11 +773,11 @@ func ListOptions(name string) metav1.ListOptions {
 func ThanosRulerStatus(kclient kubernetes.Interface, tr *monitoringv1.ThanosRuler) (*monitoringv1.ThanosRulerStatus, []v1.Pod, error) {
 	res := &monitoringv1.ThanosRulerStatus{Paused: tr.Spec.Paused}
 
-	pods, err := kclient.CoreV1().Pods(tr.Namespace).List(context.TODO(), ListOptions(tr.Name))
+	pods, err := kclient.CoreV1().Pods(tr.Namespace).List(ListOptions(tr.Name))
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "retrieving pods of failed")
 	}
-	sset, err := kclient.AppsV1().StatefulSets(tr.Namespace).Get(context.TODO(), statefulSetNameFromThanosName(tr.Name), metav1.GetOptions{})
+	sset, err := kclient.AppsV1().StatefulSets(tr.Namespace).Get(statefulSetNameFromThanosName(tr.Name), metav1.GetOptions{})
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "retrieving stateful set failed")
 	}

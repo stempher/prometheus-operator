@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -28,7 +27,7 @@ func CreateSecretWithCert(kubeClient kubernetes.Interface, certBytes, keyBytes [
 		Type:       corev1.SecretType("Opaque"),
 		Data:       map[string][]byte{"tls.crt": certBytes, "tls.key": keyBytes}}
 
-	_, err := kubeClient.CoreV1().Secrets(ns).Create(context.TODO(), secret, metav1.CreateOptions{})
+	_, err := kubeClient.CoreV1().Secrets(ns).Create(secret)
 	if err != nil {
 		return err
 	}

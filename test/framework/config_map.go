@@ -15,7 +15,6 @@
 package framework
 
 import (
-	"context"
 	"time"
 
 	"k8s.io/api/core/v1"
@@ -34,7 +33,7 @@ func (f *Framework) WaitForConfigMapExist(ns, name string) (*v1.ConfigMap, error
 			KubeClient.
 			CoreV1().
 			ConfigMaps(ns).
-			Get(context.TODO(), name, metav1.GetOptions{})
+			Get(name, metav1.GetOptions{})
 
 		if apierrors.IsNotFound(err) {
 			return false, nil
@@ -55,7 +54,7 @@ func (f *Framework) WaitForConfigMapNotExist(ns, name string) error {
 			KubeClient.
 			CoreV1().
 			ConfigMaps(ns).
-			Get(context.TODO(), name, metav1.GetOptions{})
+			Get(name, metav1.GetOptions{})
 
 		if apierrors.IsNotFound(err) {
 			return true, nil

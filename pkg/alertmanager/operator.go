@@ -17,6 +17,8 @@ package alertmanager
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"reflect"
 	"strings"
 	"time"
@@ -90,6 +92,7 @@ type Config struct {
 	Namespaces                   operator.Namespaces
 	Labels                       operator.Labels
 	AlertManagerSelector         string
+	SecretListWatchSelector      string
 }
 
 // New creates a new controller.
@@ -109,11 +112,6 @@ func New(ctx context.Context, c operator.Config, logger log.Logger, r prometheus
 		return nil, errors.Wrap(err, "instantiating monitoring client failed")
 	}
 
-	secretListWatchSelector, err := fields.ParseSelector(c.SecretListWatchSelector)
-	if err != nil {
-		return nil, errors.Wrap(err, "can not parse secrets selector value")
-	}
-
 	o := &Operator{
 		kclient: client,
 		mclient: mclient,
@@ -129,46 +127,61 @@ func New(ctx context.Context, c operator.Config, logger log.Logger, r prometheus
 			Namespaces:                   c.Namespaces,
 			Labels:                       c.Labels,
 			AlertManagerSelector:         c.AlertManagerSelector,
+			SecretListWatchSelector:      c.SecretListWatchSelector,
 		},
 	}
 
-	o.alrtInfs, err = informers.NewInformersForResource(
+	if err := o.bootstrap(ctx); err != nil {
+		return nil, err
+	}
+
+	return o, nil
+}
+
+func (c *Operator) bootstrap(ctx context.Context) error {
+	var err error
+
+	c.alrtInfs, err = informers.NewInformersForResource(
 		informers.NewMonitoringInformerFactories(
-			o.config.Namespaces.AlertmanagerAllowList,
-			o.config.Namespaces.DenyList,
-			mclient,
+			c.config.Namespaces.AlertmanagerAllowList,
+			c.config.Namespaces.DenyList,
+			c.mclient,
 			resyncPeriod,
 			func(options *metav1.ListOptions) {
-				options.LabelSelector = o.config.AlertManagerSelector
+				options.LabelSelector = c.config.AlertManagerSelector
 			},
 		),
 		monitoringv1.SchemeGroupVersion.WithResource(monitoringv1.AlertmanagerName),
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "error creating alertmanager informers")
+		return errors.Wrap(err, "error creating alertmanager informers")
 	}
 
-	o.alrtCfgInfs, err = informers.NewInformersForResource(
+	c.alrtCfgInfs, err = informers.NewInformersForResource(
 		informers.NewMonitoringInformerFactories(
-			o.config.Namespaces.AllowList,
-			o.config.Namespaces.DenyList,
-			mclient,
+			c.config.Namespaces.AllowList,
+			c.config.Namespaces.DenyList,
+			c.mclient,
 			resyncPeriod,
 			func(options *metav1.ListOptions) {
-				options.LabelSelector = o.config.AlertManagerSelector
+				options.LabelSelector = c.config.AlertManagerSelector
 			},
 		),
 		monitoringv1alpha1.SchemeGroupVersion.WithResource(monitoringv1alpha1.AlertmanagerConfigName),
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "error creating alertmanagerconfig informers")
+		return errors.Wrap(err, "error creating alertmanagerconfig informers")
 	}
 
-	o.secrInfs, err = informers.NewInformersForResource(
+	secretListWatchSelector, err := fields.ParseSelector(c.config.SecretListWatchSelector)
+	if err != nil {
+		return errors.Wrap(err, "can not parse secrets selector value")
+	}
+	c.secrInfs, err = informers.NewInformersForResource(
 		informers.NewKubeInformerFactories(
-			o.config.Namespaces.AllowList,
-			o.config.Namespaces.DenyList,
-			o.kclient,
+			c.config.Namespaces.AllowList,
+			c.config.Namespaces.DenyList,
+			c.kclient,
 			resyncPeriod,
 			func(options *metav1.ListOptions) {
 				options.FieldSelector = secretListWatchSelector.String()
@@ -177,21 +190,21 @@ func New(ctx context.Context, c operator.Config, logger log.Logger, r prometheus
 		v1.SchemeGroupVersion.WithResource("secrets"),
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "error creating secret informers")
+		return errors.Wrap(err, "error creating secret informers")
 	}
 
-	o.ssetInfs, err = informers.NewInformersForResource(
+	c.ssetInfs, err = informers.NewInformersForResource(
 		informers.NewKubeInformerFactories(
-			o.config.Namespaces.AlertmanagerAllowList,
-			o.config.Namespaces.DenyList,
-			o.kclient,
+			c.config.Namespaces.AlertmanagerAllowList,
+			c.config.Namespaces.DenyList,
+			c.kclient,
 			resyncPeriod,
 			nil,
 		),
 		appsv1.SchemeGroupVersion.WithResource("statefulsets"),
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "error creating statefulset informers")
+		return errors.Wrap(err, "error creating statefulset informers")
 	}
 
 	newNamespaceInformer := func(o *Operator, allowList map[string]struct{}) cache.SharedIndexInformer {
@@ -208,21 +221,21 @@ func New(ctx context.Context, c operator.Config, logger log.Logger, r prometheus
 		}
 		nsInf := cache.NewSharedIndexInformer(
 			o.metrics.NewInstrumentedListerWatcher(
-				listwatch.NewUnprivilegedNamespaceListWatchFromClient(o.logger, o.kclient.CoreV1().RESTClient(), allowList, o.config.Namespaces.DenyList, fields.Everything()),
+				listwatch.NewUnprivilegedNamespaceListWatchFromClient(ctx, o.logger, o.kclient.CoreV1().RESTClient(), allowList, o.config.Namespaces.DenyList, fields.Everything()),
 			),
 			&v1.Namespace{}, nsResyncPeriod, cache.Indexers{},
 		)
 
 		return nsInf
 	}
-	o.nsAlrtCfgInf = newNamespaceInformer(o, o.config.Namespaces.AllowList)
-	if listwatch.IdenticalNamespaces(o.config.Namespaces.AllowList, o.config.Namespaces.AlertmanagerAllowList) {
-		o.nsAlrtInf = o.nsAlrtCfgInf
+	c.nsAlrtCfgInf = newNamespaceInformer(c, c.config.Namespaces.AllowList)
+	if listwatch.IdenticalNamespaces(c.config.Namespaces.AllowList, c.config.Namespaces.AlertmanagerAllowList) {
+		c.nsAlrtInf = c.nsAlrtCfgInf
 	} else {
-		o.nsAlrtInf = newNamespaceInformer(o, o.config.Namespaces.AlertmanagerAllowList)
+		c.nsAlrtInf = newNamespaceInformer(c, c.config.Namespaces.AlertmanagerAllowList)
 	}
 
-	return o, nil
+	return nil
 }
 
 // waitForCacheSync waits for the informers' caches to be synced.
@@ -239,9 +252,21 @@ func (c *Operator) waitForCacheSync(ctx context.Context) error {
 		{"StatefulSet", c.ssetInfs},
 	} {
 		for _, inf := range infs.informersForResource.GetInformers() {
-			if !operator.WaitForCacheSync(ctx, log.With(c.logger, "informer", infs.name), inf.Informer()) {
+			if !operator.WaitForNamedCacheSync(ctx, "alertmanager", log.With(c.logger, "informer", infs.name), inf.Informer()) {
 				ok = false
 			}
+		}
+	}
+
+	for _, inf := range []struct {
+		name     string
+		informer cache.SharedIndexInformer
+	}{
+		{"AlertmanagerNamespace", c.nsAlrtInf},
+		{"AlertmanagerConfigNamespace", c.nsAlrtCfgInf},
+	} {
+		if !operator.WaitForNamedCacheSync(ctx, "alertmanager", log.With(c.logger, "informer", inf.name), inf.informer) {
+			ok = false
 		}
 	}
 
@@ -311,7 +336,7 @@ func (c *Operator) handleAlertmanagerConfigDelete(obj interface{}) {
 	}
 }
 
-// TODO: Do we need to enque secrets just for the namespace or in general?
+// TODO: Do we need to enqueue secrets just for the namespace or in general?
 func (c *Operator) handleSecretDelete(obj interface{}) {
 	o, ok := c.getObject(obj)
 	if ok {
@@ -533,10 +558,6 @@ func (c *Operator) alertmanagerForStatefulSet(sset interface{}) *monitoringv1.Al
 	return a.(*monitoringv1.Alertmanager)
 }
 
-func alertmanagerNameFromStatefulSetName(name string) string {
-	return strings.TrimPrefix(name, "alertmanager-")
-}
-
 func statefulSetNameFromAlertmanagerName(name string) string {
 	return "alertmanager-" + name
 }
@@ -641,11 +662,11 @@ func (c *Operator) sync(ctx context.Context, key string) error {
 
 	assetStore := assets.NewStore(c.kclient.CoreV1(), c.kclient.CoreV1())
 
-	if err := c.provisionAlertmanagerConfiguration(context.TODO(), am, assetStore); err != nil {
+	if err := c.provisionAlertmanagerConfiguration(ctx, am, assetStore); err != nil {
 		return errors.Wrap(err, "provision alertmanager configuration")
 	}
 
-	if err := c.createOrUpdateTLSAssetSecret(am, assetStore); err != nil {
+	if err := c.createOrUpdateTLSAssetSecret(ctx, am, assetStore); err != nil {
 		return errors.Wrap(err, "creating tls asset secret failed")
 	}
 
@@ -702,26 +723,37 @@ func (c *Operator) sync(ctx context.Context, key string) error {
 }
 
 func (c *Operator) provisionAlertmanagerConfiguration(ctx context.Context, am *monitoringv1.Alertmanager, store *assets.Store) error {
-
 	secretName := defaultConfigSecretName(am.Name)
 	if am.Spec.ConfigSecret != "" {
 		secretName = am.Spec.ConfigSecret
 	}
 
+	// Tentatively retrieve the secret containing the user-provided Alertmanager
+	// configuration.
 	secret, err := c.kclient.CoreV1().Secrets(am.Namespace).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return errors.Wrap(err, "get base configuration secret")
+	}
+
+	var secretData map[string][]byte
+	if secret != nil {
+		secretData = secret.Data
 	}
 
 	rawBaseConfig := []byte(`route:
   receiver: 'null'
 receivers:
 - name: 'null'`)
-	if secret != nil && secret.Data["alertmanager.yaml"] != nil {
-		rawBaseConfig = secret.Data["alertmanager.yaml"]
+	if len(secretData[alertmanagerConfigFile]) > 0 {
+		rawBaseConfig = secretData[alertmanagerConfigFile]
 	} else {
-		level.Info(c.logger).Log("msg", "either base config secret not found, or alertmanager.yaml field not specified",
-			"secret", secretName, "alertmanager", am.Name, "namespace", am.Namespace)
+		if secret == nil {
+			level.Info(c.logger).Log("msg", "base config secret not found",
+				"secret", secretName, "alertmanager", am.Name, "namespace", am.Namespace)
+		} else {
+			level.Info(c.logger).Log("msg", "key not found in base config secret",
+				"secret", secretName, "key", alertmanagerConfigFile, "alertmanager", am.Name, "namespace", am.Namespace)
+		}
 	}
 
 	baseConfig, err := loadCfg(string(rawBaseConfig))
@@ -736,7 +768,8 @@ receivers:
 			"base config secret", secretName, "mounted config secret", generatedConfigSecretName(am.Name),
 			"alertmanager", am.Name, "namespace", am.Namespace,
 		)
-		err = c.createOrUpdateGeneratedConfigSecret(ctx, am, rawBaseConfig)
+
+		err = c.createOrUpdateGeneratedConfigSecret(ctx, am, rawBaseConfig, secretData)
 		if err != nil {
 			return errors.Wrap(err, "create or update generated config secret failed")
 		}
@@ -748,12 +781,13 @@ receivers:
 		return errors.Wrap(err, "selecting AlertmanagerConfigs failed")
 	}
 
-	conf, err := newConfigGenerator(c.logger, store).generateConfig(ctx, *baseConfig, amConfigs)
+	generator := newConfigGenerator(c.logger, store)
+	generatedConfig, err := generator.generateConfig(ctx, *baseConfig, amConfigs)
 	if err != nil {
 		return errors.Wrap(err, "generating Alertmanager config yaml failed")
 	}
 
-	err = c.createOrUpdateGeneratedConfigSecret(ctx, am, conf)
+	err = c.createOrUpdateGeneratedConfigSecret(ctx, am, generatedConfig, secretData)
 	if err != nil {
 		return errors.Wrap(err, "create or update generated config secret failed")
 	}
@@ -761,7 +795,7 @@ receivers:
 	return nil
 }
 
-func (c *Operator) createOrUpdateGeneratedConfigSecret(ctx context.Context, am *monitoringv1.Alertmanager, conf []byte) error {
+func (c *Operator) createOrUpdateGeneratedConfigSecret(ctx context.Context, am *monitoringv1.Alertmanager, conf []byte, additionalData map[string][]byte) error {
 	boolTrue := true
 	sClient := c.kclient.CoreV1().Secrets(am.Namespace)
 
@@ -780,8 +814,13 @@ func (c *Operator) createOrUpdateGeneratedConfigSecret(ctx context.Context, am *
 				},
 			},
 		},
-		Data: map[string][]byte{"alertmanager.yaml": conf},
+		Data: map[string][]byte{},
 	}
+
+	for k, v := range additionalData {
+		generatedConfigSecret.Data[k] = v
+	}
+	generatedConfigSecret.Data[alertmanagerConfigFile] = conf
 
 	_, err := sClient.Get(ctx, generatedConfigSecret.Name, metav1.GetOptions{})
 	if err != nil {
@@ -795,14 +834,13 @@ func (c *Operator) createOrUpdateGeneratedConfigSecret(ctx context.Context, am *
 		}
 		_, err = sClient.Create(ctx, generatedConfigSecret, metav1.CreateOptions{})
 		level.Debug(c.logger).Log("msg", "created generated config secret", "secretname", generatedConfigSecret.Name)
-
 	} else {
 		_, err = sClient.Update(ctx, generatedConfigSecret, metav1.UpdateOptions{})
 		level.Debug(c.logger).Log("msg", "updated generated config secret", "secretname", generatedConfigSecret.Name)
 	}
 
 	if err != nil {
-		return errors.Wrapf(err, "failed to create generated config secret for Alertmanager %v in namespace %v", am.Name, am.Namespace)
+		return errors.Wrapf(err, "failed to update generated config secret for Alertmanager %v in namespace %v", am.Name, am.Namespace)
 	}
 
 	return nil
@@ -879,88 +917,334 @@ func (c *Operator) selectAlertManagerConfigs(ctx context.Context, am *monitoring
 // checkAlertmanagerConfig verifies that an AlertmanagerConfig object is valid
 // and has no missing references to other objects.
 func checkAlertmanagerConfig(ctx context.Context, amc *monitoringv1alpha1.AlertmanagerConfig, store *assets.Store) error {
-	receiverNames := make(map[string]struct{})
-
-	for i, receiver := range amc.Spec.Receivers {
-		if _, found := receiverNames[receiver.Name]; found {
-			return errors.Errorf("%q receiver is not unique", receiver.Name)
-		}
-		receiverNames[receiver.Name] = struct{}{}
-
-		amcKey := fmt.Sprintf("alertmanagerConfig/%s/%s/%d", amc.GetNamespace(), amc.GetName(), i)
-
-		for j, pdConfig := range receiver.PagerDutyConfigs {
-			pdcKey := fmt.Sprintf("%s/pagerduty/%d", amcKey, j)
-
-			if pdConfig.RoutingKey != nil {
-				if _, err := store.GetSecretKey(ctx, amc.GetNamespace(), *pdConfig.RoutingKey); err != nil {
-					return err
-				}
-			}
-
-			if pdConfig.ServiceKey != nil {
-				if _, err := store.GetSecretKey(ctx, amc.GetNamespace(), *pdConfig.ServiceKey); err != nil {
-					return err
-				}
-			}
-
-			if err := configureHTTPConfigInStore(ctx, pdConfig.HTTPConfig, amc.GetNamespace(), pdcKey, store); err != nil {
-				return err
-			}
-		}
-
-		for j, ogConfig := range receiver.OpsGenieConfigs {
-			ogcKey := fmt.Sprintf("%s/opsgenie/%d", amcKey, j)
-
-			if ogConfig.APIKey != nil {
-				if _, err := store.GetSecretKey(ctx, amc.GetNamespace(), *ogConfig.APIKey); err != nil {
-					return err
-				}
-			}
-
-			if err := ogConfig.Validate(); err != nil {
-				return err
-			}
-
-			if err := configureHTTPConfigInStore(ctx, ogConfig.HTTPConfig, amc.GetNamespace(), ogcKey, store); err != nil {
-				return err
-			}
-		}
-
-		for j, whConfig := range receiver.WebhookConfigs {
-			whcKey := fmt.Sprintf("%s/webhook/%d", amcKey, j)
-
-			if whConfig.URL == nil && whConfig.URLSecret == nil {
-				return errors.New("one of url or urlSecret should be specified")
-			}
-
-			if whConfig.URLSecret != nil {
-				if _, err := store.GetSecretKey(ctx, amc.GetNamespace(), *whConfig.URLSecret); err != nil {
-					return err
-				}
-			}
-
-			if err := configureHTTPConfigInStore(ctx, whConfig.HTTPConfig, amc.GetNamespace(), whcKey, store); err != nil {
-				return err
-			}
-		}
+	receiverNames, err := checkReceivers(ctx, amc, store)
+	if err != nil {
+		return err
 	}
 
 	return checkAlertmanagerRoutes(amc.Spec.Route, receiverNames)
 }
 
-func checkAlertmanagerRoutes(route *monitoringv1alpha1.Route, receivers map[string]struct{}) error {
-	if route == nil {
+func checkReceivers(ctx context.Context, amc *monitoringv1alpha1.AlertmanagerConfig, store *assets.Store) (map[string]struct{}, error) {
+	var err error
+	receiverNames := make(map[string]struct{})
+
+	for i, receiver := range amc.Spec.Receivers {
+		if _, found := receiverNames[receiver.Name]; found {
+			return nil, errors.Errorf("%q receiver is not unique", receiver.Name)
+		}
+		receiverNames[receiver.Name] = struct{}{}
+
+		amcKey := fmt.Sprintf("alertmanagerConfig/%s/%s/%d", amc.GetNamespace(), amc.GetName(), i)
+
+		err = checkPagerDutyConfigs(ctx, receiver.PagerDutyConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkOpsGenieConfigs(ctx, receiver.OpsGenieConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+		err = checkSlackConfigs(ctx, receiver.SlackConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkWebhookConfigs(ctx, receiver.WebhookConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkWechatConfigs(ctx, receiver.WeChatConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkEmailConfigs(ctx, receiver.EmailConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkVictorOpsConfigs(ctx, receiver.VictorOpsConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+
+		err = checkPushoverConfigs(ctx, receiver.PushoverConfigs, amc.GetNamespace(), amcKey, store)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return receiverNames, nil
+}
+
+func checkPagerDutyConfigs(ctx context.Context, configs []monitoringv1alpha1.PagerDutyConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+		pagerDutyConfigKey := fmt.Sprintf("%s/pagerduty/%d", key, i)
+
+		if config.RoutingKey != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.RoutingKey); err != nil {
+				return err
+			}
+		}
+
+		if config.ServiceKey != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.ServiceKey); err != nil {
+				return err
+			}
+		}
+
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, pagerDutyConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkOpsGenieConfigs(ctx context.Context, configs []monitoringv1alpha1.OpsGenieConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+		opsgenieConfigKey := fmt.Sprintf("%s/opsgenie/%d", key, i)
+
+		if config.APIKey != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.APIKey); err != nil {
+				return err
+			}
+		}
+
+		if err := config.Validate(); err != nil {
+			return err
+		}
+
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, opsgenieConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkSlackConfigs(ctx context.Context, configs []monitoringv1alpha1.SlackConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+		slackConfigKey := fmt.Sprintf("%s/slack/%d", key, i)
+
+		if config.APIURL != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.APIURL); err != nil {
+				return err
+			}
+		}
+
+		if err := config.Validate(); err != nil {
+			return err
+		}
+
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, slackConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkWebhookConfigs(ctx context.Context, configs []monitoringv1alpha1.WebhookConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+		webhookConfigKey := fmt.Sprintf("%s/webhook/%d", key, i)
+
+		if config.URL == nil && config.URLSecret == nil {
+			return errors.New("one of url or urlSecret should be specified")
+		}
+
+		if config.URLSecret != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.URLSecret); err != nil {
+				return err
+			}
+		}
+
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, webhookConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkWechatConfigs(ctx context.Context, configs []monitoringv1alpha1.WeChatConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+		wechatConfigKey := fmt.Sprintf("%s/wechat/%d", key, i)
+
+		if config.APIURL != nil {
+			_, err := url.Parse(*config.APIURL)
+			if err != nil {
+				return errors.New("api url not valid")
+			}
+		}
+
+		if config.APISecret != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.APISecret); err != nil {
+				return err
+			}
+		}
+
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, wechatConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkEmailConfigs(ctx context.Context, configs []monitoringv1alpha1.EmailConfig, namespace string, key string, store *assets.Store) error {
+	for _, config := range configs {
+
+		if config.To == nil || *config.To == "" {
+			return errors.New("missing to address in email config")
+		}
+
+		if config.Smarthost != nil {
+			_, _, err := net.SplitHostPort(*config.Smarthost)
+			if err != nil {
+				return errors.New("invalid email field SMARTHOST")
+			}
+		}
+		if config.AuthPassword != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.AuthPassword); err != nil {
+				return err
+			}
+		}
+		if config.AuthSecret != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.AuthSecret); err != nil {
+				return err
+			}
+		}
+
+		if config.Headers != nil {
+			// Header names are case-insensitive, check for collisions.
+			normalizedHeaders := map[string]struct{}{}
+			for _, v := range config.Headers {
+				normalized := strings.Title(v.Key)
+				if _, ok := normalizedHeaders[normalized]; ok {
+					return fmt.Errorf("duplicate header %q in email config", normalized)
+				}
+				normalizedHeaders[normalized] = struct{}{}
+			}
+		}
+
+		if err := store.AddSafeTLSConfig(ctx, namespace, config.TLSConfig); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkVictorOpsConfigs(ctx context.Context, configs []monitoringv1alpha1.VictorOpsConfig, namespace string, key string, store *assets.Store) error {
+	for i, config := range configs {
+
+		if config.APIKey != nil {
+			if _, err := store.GetSecretKey(ctx, namespace, *config.APIKey); err != nil {
+				return err
+			}
+		}
+
+		// from https://github.com/prometheus/alertmanager/blob/a7f9fdadbecbb7e692d2cd8d3334e3d6de1602e1/config/notifiers.go#L497
+		reservedFields := map[string]struct{}{
+			"routing_key":         {},
+			"message_type":        {},
+			"state_message":       {},
+			"entity_display_name": {},
+			"monitoring_tool":     {},
+			"entity_id":           {},
+			"entity_state":        {},
+		}
+
+		if len(config.CustomFields) > 0 {
+			for _, v := range config.CustomFields {
+				if _, ok := reservedFields[v.Key]; ok {
+					return fmt.Errorf("usage of reserved word %q is not allowed in custom fields", v.Key)
+				}
+			}
+		}
+
+		if config.RoutingKey == nil || *config.RoutingKey == "" {
+			return errors.New("missing Routing key in VictorOps config")
+		}
+
+		victoropsConfigKey := fmt.Sprintf("%s/victorops/%d", key, i)
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, victoropsConfigKey, store); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkPushoverConfigs(ctx context.Context, configs []monitoringv1alpha1.PushoverConfig, namespace string, key string, store *assets.Store) error {
+
+	checkSecret := func(secret *v1.SecretKeySelector, name string) error {
+		if secret == nil {
+			return errors.Errorf("mandatory field %s is empty", name)
+		}
+		s, err := store.GetSecretKey(ctx, namespace, *secret)
+		if err != nil {
+			return err
+		}
+		if s == "" {
+			return errors.New("mandatory field userKey is empty")
+		}
 		return nil
 	}
 
-	if _, found := receivers[route.Receiver]; !found {
-		return errors.Errorf("receiver %q not found", route.Receiver)
+	for i, config := range configs {
+
+		if err := checkSecret(config.UserKey, "userKey"); err != nil {
+			return err
+		}
+		if err := checkSecret(config.Token, "token"); err != nil {
+			return err
+		}
+
+		if config.Retry != nil {
+			_, err := time.ParseDuration(*config.Retry)
+			if err != nil {
+				return errors.New("invalid retry duration")
+			}
+		}
+		if config.Expire != nil {
+			_, err := time.ParseDuration(*config.Expire)
+			if err != nil {
+				return errors.New("invalid expire duration")
+			}
+		}
+
+		pushoverConfigKey := fmt.Sprintf("%s/pushover/%d", key, i)
+		if err := configureHTTPConfigInStore(ctx, config.HTTPConfig, namespace, pushoverConfigKey, store); err != nil {
+			return err
+		}
 	}
 
-	for _, r := range route.Routes {
-		if err := checkAlertmanagerRoutes(&r, receivers); err != nil {
-			return err
+	return nil
+}
+
+// checkAlertmanagerRoutes verifies that the given route and all its children are semantically valid.
+func checkAlertmanagerRoutes(r *monitoringv1alpha1.Route, receivers map[string]struct{}) error {
+	if r == nil {
+		return nil
+	}
+
+	if _, found := receivers[r.Receiver]; !found {
+		return errors.Errorf("receiver %q not found", r.Receiver)
+	}
+
+	children, err := r.ChildRoutes()
+	if err != nil {
+		return err
+	}
+
+	for i := range children {
+		if err := checkAlertmanagerRoutes(&children[i], receivers); err != nil {
+			return errors.Wrapf(err, "route[%d]", i)
 		}
 	}
 
@@ -1003,7 +1287,7 @@ func (c *Operator) listMatchingNamespaces(selector labels.Selector) ([]string, e
 	return ns, nil
 }
 
-func (c *Operator) createOrUpdateTLSAssetSecret(am *monitoringv1.Alertmanager, store *assets.Store) error {
+func (c *Operator) createOrUpdateTLSAssetSecret(ctx context.Context, am *monitoringv1.Alertmanager, store *assets.Store) error {
 	boolTrue := true
 	sClient := c.kclient.CoreV1().Secrets(am.Namespace)
 
@@ -1029,7 +1313,7 @@ func (c *Operator) createOrUpdateTLSAssetSecret(am *monitoringv1.Alertmanager, s
 		tlsAssetsSecret.Data[key.String()] = []byte(asset)
 	}
 
-	_, err := sClient.Get(context.TODO(), tlsAssetsSecret.Name, metav1.GetOptions{})
+	_, err := sClient.Get(ctx, tlsAssetsSecret.Name, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return errors.Wrapf(
@@ -1039,11 +1323,11 @@ func (c *Operator) createOrUpdateTLSAssetSecret(am *monitoringv1.Alertmanager, s
 				am.Namespace,
 			)
 		}
-		_, err = sClient.Create(context.TODO(), tlsAssetsSecret, metav1.CreateOptions{})
+		_, err = sClient.Create(ctx, tlsAssetsSecret, metav1.CreateOptions{})
 		level.Debug(c.logger).Log("msg", "created tlsAssetsSecret", "secretname", tlsAssetsSecret.Name)
 
 	} else {
-		_, err = sClient.Update(context.TODO(), tlsAssetsSecret, metav1.UpdateOptions{})
+		_, err = sClient.Update(ctx, tlsAssetsSecret, metav1.UpdateOptions{})
 		level.Debug(c.logger).Log("msg", "updated tlsAssetsSecret", "secretname", tlsAssetsSecret.Name)
 	}
 

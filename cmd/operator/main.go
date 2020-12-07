@@ -46,7 +46,8 @@ import (
 	"github.com/prometheus/common/version"
 	"golang.org/x/sync/errgroup"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog"
+	klogv2 "k8s.io/klog/v2"
 )
 
 const (
@@ -144,7 +145,7 @@ var (
 )
 
 func init() {
-	klog.InitFlags(flagset)
+	// With migration to klog-gokit, calling klogv2.InitFlags(flagset) is not applicable.
 	flagset.StringVar(&cfg.ListenAddress, "web.listen-address", ":8080", "Address on which to expose metrics and web interface.")
 	flagset.BoolVar(&serverTLS, "web.enable-tls", false, "Activate prometheus operator web server TLS.  "+
 		" This is useful for example when using the rule validation webhook.")
@@ -172,7 +173,7 @@ func init() {
 	// TODO(simonpasquier): remove the '--config-reloader-image' flag before releasing v0.45.
 	flagset.StringVar(&deprecatedConfigReloaderImage, "config-reloader-image", "", "Reload image. Deprecated, it will be removed in v0.45.0.")
 	flagset.StringVar(&cfg.ReloaderConfig.CPU, "config-reloader-cpu", "100m", "Config Reloader CPU request & limit. Value \"0\" disables it and causes no request/limit to be configured.")
-	flagset.StringVar(&cfg.ReloaderConfig.Memory, "config-reloader-memory", "25Mi", "Config Reloader Memory requst & limit. Value \"0\" disables it and causes no request/limit to be configured.")
+	flagset.StringVar(&cfg.ReloaderConfig.Memory, "config-reloader-memory", "50Mi", "Config Reloader Memory request & limit. Value \"0\" disables it and causes no request/limit to be configured.")
 	flagset.StringVar(&cfg.AlertmanagerDefaultBaseImage, "alertmanager-default-base-image", operator.DefaultAlertmanagerBaseImage, "Alertmanager default base image (path without tag/version)")
 	flagset.StringVar(&cfg.PrometheusDefaultBaseImage, "prometheus-default-base-image", operator.DefaultPrometheusBaseImage, "Prometheus default base image (path without tag/version)")
 	flagset.StringVar(&cfg.ThanosDefaultBaseImage, "thanos-default-base-image", operator.DefaultThanosBaseImage, "Thanos default base image (path without tag/version)")
@@ -224,6 +225,12 @@ func Main() int {
 	}
 	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
 	logger = log.With(logger, "caller", log.DefaultCaller)
+
+	// Above level 6, the k8s client would log bearer tokens in clear-text.
+	klog.ClampLevel(6)
+	klog.SetLogger(log.With(logger, "component", "k8s_client_runtime"))
+	klogv2.ClampLevel(6)
+	klogv2.SetLogger(log.With(logger, "component", "k8s_client_runtime"))
 
 	level.Info(logger).Log("msg", "Starting Prometheus Operator", "version", version.Info())
 	level.Info(logger).Log("build_context", version.BuildContext())

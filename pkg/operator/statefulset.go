@@ -24,7 +24,9 @@ import (
 
 const configReloaderPort = 8080
 
-// CreateConfigReloader returns the definition of the config-reloader container.
+// CreateConfigReloader returns the definition of the config-reloader
+// container. No shard environment variable will be passed to the reloader
+// container if `-1` is passed to the shards parameter.
 func CreateConfigReloader(
 	config ReloaderConfig,
 	reloadURL url.URL,
@@ -33,6 +35,7 @@ func CreateConfigReloader(
 	logFormat, logLevel string,
 	additionalArgs []string,
 	volumeMounts []v1.VolumeMount,
+	shard int32,
 ) v1.Container {
 	var (
 		ports []v1.ContainerPort
@@ -91,6 +94,10 @@ func CreateConfigReloader(
 				ValueFrom: &v1.EnvVarSource{
 					FieldRef: &v1.ObjectFieldSelector{FieldPath: "metadata.name"},
 				},
+			},
+			{
+				Name:  "SHARD",
+				Value: fmt.Sprint(shard),
 			},
 		},
 		Command:      []string{"/bin/prometheus-config-reloader"},

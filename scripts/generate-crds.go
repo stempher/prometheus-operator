@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -64,25 +63,6 @@ var (
 				{"thanosruler", "thanosrulers"},
 			},
 			CustomizeYAML: func(generator crdGenerator) error {
-				prometheusManifest := fmt.Sprintf("%s/%s_%s.yaml", generator.YAMLDir, generator.CRDAPIGroup, "prometheus")
-				data, err := ioutil.ReadFile(prometheusManifest)
-				if err != nil {
-					return errors.Wrapf(err, "reading %s", prometheusManifest)
-				}
-				data = bytes.ReplaceAll(data, []byte("plural: prometheus"), []byte("plural: prometheuses"))
-				data = bytes.ReplaceAll(data, []byte("prometheus.monitoring.coreos.com"), []byte("prometheuses.monitoring.coreos.com"))
-
-				prometheusesManifest := fmt.Sprintf("%s/%s_%s.yaml", generator.YAMLDir, generator.CRDAPIGroup, "prometheuses")
-				err = ioutil.WriteFile(prometheusesManifest, data, 0644)
-				if err != nil {
-					return errors.Wrapf(err, "generating %s", prometheusesManifest)
-				}
-
-				err = os.Remove(prometheusManifest)
-				if err != nil {
-					return errors.Wrapf(err, "removing %s", prometheusManifest)
-				}
-
 				return nil
 			},
 		},
@@ -94,23 +74,6 @@ var (
 			ControllerPath:    "./pkg/apis/monitoring/v1alpha1",
 			CRDNames: []crdName{
 				{"alertmanagerconfig", "alertmanagerconfigs"},
-			},
-			CustomizeYAML: func(generator crdGenerator) error {
-				// Set missing spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.route.properties.routes.items.type
-				alertmanagerconfigManifest := fmt.Sprintf("%s/%s_%s.yaml", generator.YAMLDir, generator.CRDAPIGroup, "alertmanagerconfigs")
-				data, err := ioutil.ReadFile(alertmanagerconfigManifest)
-				if err != nil {
-					return errors.Wrapf(err, "reading %s", alertmanagerconfigManifest)
-				}
-				data = bytes.ReplaceAll(data,
-					[]byte("routes:\n                    items: {}"),
-					[]byte("routes:\n                    items:\n                      type: object"),
-				)
-				err = ioutil.WriteFile(alertmanagerconfigManifest, data, 0644)
-				if err != nil {
-					return errors.Wrapf(err, "generating %s", alertmanagerconfigManifest)
-				}
-				return nil
 			},
 		},
 	}
@@ -133,6 +96,10 @@ func (generator crdGenerator) generateYAMLManifests() error {
 	err = cmd.Run()
 	if err != nil {
 		return errors.Wrapf(err, "running %s", cmd)
+	}
+
+	if generator.CustomizeYAML == nil {
+		return nil
 	}
 
 	err = generator.CustomizeYAML(generator)

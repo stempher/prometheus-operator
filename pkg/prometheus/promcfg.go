@@ -247,6 +247,10 @@ func (cg *configGenerator) generateConfig(
 	sort.Strings(probeIdentifiers)
 
 	apiserverConfig := p.Spec.APIServerConfig
+	shards := int32(1)
+	if p.Spec.Shards != nil && *p.Spec.Shards > 1 {
+		shards = *p.Spec.Shards
+	}
 
 	var scrapeConfigs []yaml.MapSlice
 	for _, identifier := range sMonIdentifiers {
@@ -264,7 +268,10 @@ func (cg *configGenerator) generateConfig(
 					p.Spec.IgnoreNamespaceSelectors,
 					p.Spec.EnforcedNamespaceLabel,
 					p.Spec.EnforcedSampleLimit,
-					p.Spec.EnforcedTargetLimit))
+					p.Spec.EnforcedTargetLimit,
+					shards,
+				),
+			)
 		}
 	}
 	for _, identifier := range pMonIdentifiers {
@@ -281,7 +288,10 @@ func (cg *configGenerator) generateConfig(
 					p.Spec.IgnoreNamespaceSelectors,
 					p.Spec.EnforcedNamespaceLabel,
 					p.Spec.EnforcedSampleLimit,
-					p.Spec.EnforcedTargetLimit))
+					p.Spec.EnforcedTargetLimit,
+					shards,
+				),
+			)
 		}
 	}
 
@@ -373,7 +383,7 @@ func (cg *configGenerator) generateConfig(
 	}
 
 	if len(p.Spec.RemoteRead) > 0 && version.Major >= 2 {
-		cfg = append(cfg, cg.generateRemoteReadConfig(version, p.Spec.RemoteRead, basicAuthSecrets))
+		cfg = append(cfg, cg.generateRemoteReadConfig(version, p, basicAuthSecrets))
 	}
 
 	return yaml.Marshal(cfg)
@@ -419,8 +429,9 @@ func (cg *configGenerator) generatePodMonitorConfig(
 	ignoreNamespaceSelectors bool,
 	enforcedNamespaceLabel string,
 	enforcedSampleLimit *uint64,
-	enforcedTargetLimit *uint64) yaml.MapSlice {
-
+	enforcedTargetLimit *uint64,
+	shards int32,
+) yaml.MapSlice {
 	hl := honorLabels(ep.HonorLabels, ignoreHonorLabels)
 	cfg := yaml.MapSlice{
 		{
@@ -523,14 +534,14 @@ func (cg *configGenerator) generatePodMonitorConfig(
 		case metav1.LabelSelectorOpExists:
 			relabelings = append(relabelings, yaml.MapSlice{
 				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
+				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_labelpresent_" + sanitizeLabelName(exp.Key)}},
+				{Key: "regex", Value: "true"},
 			})
 		case metav1.LabelSelectorOpDoesNotExist:
 			relabelings = append(relabelings, yaml.MapSlice{
 				{Key: "action", Value: "drop"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
+				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_labelpresent_" + sanitizeLabelName(exp.Key)}},
+				{Key: "regex", Value: "true"},
 			})
 		}
 	}
@@ -629,6 +640,8 @@ func (cg *configGenerator) generatePodMonitorConfig(
 	// Because of security risks, whenever enforcedNamespaceLabel is set, we want to append it to the
 	// relabel_configs as the last relabeling, to ensure it overrides any other relabelings.
 	relabelings = enforceNamespaceLabel(relabelings, m.Namespace, enforcedNamespaceLabel)
+
+	relabelings = generateAddressShardingRelabelingRules(relabelings, shards)
 	cfg = append(cfg, yaml.MapItem{Key: "relabel_configs", Value: relabelings})
 
 	if m.Spec.SampleLimit > 0 || enforcedSampleLimit != nil {
@@ -780,14 +793,14 @@ func (cg *configGenerator) generateProbeConfig(
 			case metav1.LabelSelectorOpExists:
 				relabelings = append(relabelings, yaml.MapSlice{
 					{Key: "action", Value: "keep"},
-					{Key: "source_labels", Value: []string{"__meta_kubernetes_ingress_label_" + sanitizeLabelName(exp.Key)}},
-					{Key: "regex", Value: ".+"},
+					{Key: "source_labels", Value: []string{"__meta_kubernetes_ingress_labelpresent_" + sanitizeLabelName(exp.Key)}},
+					{Key: "regex", Value: "true"},
 				})
 			case metav1.LabelSelectorOpDoesNotExist:
 				relabelings = append(relabelings, yaml.MapSlice{
 					{Key: "action", Value: "drop"},
-					{Key: "source_labels", Value: []string{"__meta_kubernetes_ingress_label_" + sanitizeLabelName(exp.Key)}},
-					{Key: "regex", Value: ".+"},
+					{Key: "source_labels", Value: []string{"__meta_kubernetes_ingress_labelpresent_" + sanitizeLabelName(exp.Key)}},
+					{Key: "regex", Value: "true"},
 				})
 			}
 		}
@@ -862,8 +875,9 @@ func (cg *configGenerator) generateServiceMonitorConfig(
 	ignoreNamespaceSelectors bool,
 	enforcedNamespaceLabel string,
 	enforcedSampleLimit *uint64,
-	enforcedTargetLimit *uint64) yaml.MapSlice {
-
+	enforcedTargetLimit *uint64,
+	shards int32,
+) yaml.MapSlice {
 	hl := honorLabels(ep.HonorLabels, overrideHonorLabels)
 	cfg := yaml.MapSlice{
 		{
@@ -968,14 +982,14 @@ func (cg *configGenerator) generateServiceMonitorConfig(
 		case metav1.LabelSelectorOpExists:
 			relabelings = append(relabelings, yaml.MapSlice{
 				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_service_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
+				{Key: "source_labels", Value: []string{"__meta_kubernetes_service_labelpresent_" + sanitizeLabelName(exp.Key)}},
+				{Key: "regex", Value: "true"},
 			})
 		case metav1.LabelSelectorOpDoesNotExist:
 			relabelings = append(relabelings, yaml.MapSlice{
 				{Key: "action", Value: "drop"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_service_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
+				{Key: "source_labels", Value: []string{"__meta_kubernetes_service_labelpresent_" + sanitizeLabelName(exp.Key)}},
+				{Key: "regex", Value: "true"},
 			})
 		}
 	}
@@ -1100,6 +1114,8 @@ func (cg *configGenerator) generateServiceMonitorConfig(
 	// Because of security risks, whenever enforcedNamespaceLabel is set, we want to append it to the
 	// relabel_configs as the last relabeling, to ensure it overrides any other relabelings.
 	relabelings = enforceNamespaceLabel(relabelings, m.Namespace, enforcedNamespaceLabel)
+
+	relabelings = generateAddressShardingRelabelingRules(relabelings, shards)
 	cfg = append(cfg, yaml.MapItem{Key: "relabel_configs", Value: relabelings})
 
 	if m.Spec.SampleLimit > 0 || enforcedSampleLimit != nil {
@@ -1135,6 +1151,19 @@ func getLimit(user uint64, enforced *uint64) uint64 {
 		return *enforced
 	}
 	return user
+}
+
+func generateAddressShardingRelabelingRules(relabelings []yaml.MapSlice, shards int32) []yaml.MapSlice {
+	return append(relabelings, yaml.MapSlice{
+		{Key: "source_labels", Value: []string{"__address__"}},
+		{Key: "target_label", Value: "__tmp_hash"},
+		{Key: "modulus", Value: shards},
+		{Key: "action", Value: "hashmod"},
+	}, yaml.MapSlice{
+		{Key: "source_labels", Value: []string{"__tmp_hash"}},
+		{Key: "regex", Value: "$(SHARD)"},
+		{Key: "action", Value: "keep"},
+	})
 }
 
 // appendPre17RelabelConfig appends relabel config to pre-1.7 prometheus versions
@@ -1366,11 +1395,11 @@ func (cg *configGenerator) generateAlertmanagerConfig(version semver.Version, am
 	return cfg
 }
 
-func (cg *configGenerator) generateRemoteReadConfig(version semver.Version, specs []v1.RemoteReadSpec, basicAuthSecrets map[string]assets.BasicAuthCredentials) yaml.MapItem {
+func (cg *configGenerator) generateRemoteReadConfig(version semver.Version, p *v1.Prometheus, basicAuthSecrets map[string]assets.BasicAuthCredentials) yaml.MapItem {
 
 	cfgs := []yaml.MapSlice{}
 
-	for i, spec := range specs {
+	for i, spec := range p.Spec.RemoteRead {
 		//defaults
 		if spec.RemoteTimeout == "" {
 			spec.RemoteTimeout = "30s"
@@ -1412,9 +1441,7 @@ func (cg *configGenerator) generateRemoteReadConfig(version semver.Version, spec
 			cfg = append(cfg, yaml.MapItem{Key: "bearer_token_file", Value: spec.BearerTokenFile})
 		}
 
-		// TODO: If we want to support secret refs for remote read tls
-		// config as well, make sure to path the right namespace here.
-		cfg = addTLStoYaml(cfg, "", spec.TLSConfig)
+		cfg = addTLStoYaml(cfg, p.ObjectMeta.Namespace, spec.TLSConfig)
 
 		if spec.ProxyURL != "" {
 			cfg = append(cfg, yaml.MapItem{Key: "proxy_url", Value: spec.ProxyURL})

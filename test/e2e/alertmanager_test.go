@@ -22,9 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -715,7 +718,7 @@ inhibit_rules:
 	}
 }
 
-func testAMConfigCRD(t *testing.T) {
+func testAlertmanagerConfigCRD(t *testing.T) {
 	// Don't run Alertmanager tests in parallel. See
 	// https://github.com/prometheus/alertmanager/issues/1835 for details.
 
@@ -730,15 +733,18 @@ func testAMConfigCRD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	routingKeySecret := &v1.Secret{
+	// reuse the secret for pagerduty and wechat
+	testingSecret := "testing-secret"
+	testingSecretKey := "testing-secret-key"
+	testingKeySecret := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "pd-receiver-routing-key",
+			Name: testingSecret,
 		},
 		Data: map[string][]byte{
-			"routing-key": []byte("1234abc"),
+			testingSecretKey: []byte("1234abc"),
 		},
 	}
-	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), routingKeySecret, metav1.CreateOptions{}); err != nil {
+	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), testingKeySecret, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -754,10 +760,22 @@ func testAMConfigCRD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A valid AlertmanagerConfig resource.
+	slackApiURLSecret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "s-receiver-api-url",
+		},
+		Data: map[string][]byte{
+			"api-url": []byte("http://slack.example.com"),
+		},
+	}
+	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), slackApiURLSecret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A valid AlertmanagerConfig resource with many receivers.
 	configCR := &monitoringv1alpha1.AlertmanagerConfig{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "e2e-test-amconfig",
+			Name:      "e2e-test-amconfig-many-receivers",
 			Namespace: ns,
 		},
 		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
@@ -779,11 +797,154 @@ func testAMConfigCRD(t *testing.T) {
 				PagerDutyConfigs: []monitoringv1alpha1.PagerDutyConfig{{
 					RoutingKey: &v1.SecretKeySelector{
 						LocalObjectReference: v1.LocalObjectReference{
-							Name: "pd-receiver-routing-key",
+							Name: testingSecret,
 						},
-						Key: "routing-key",
+						Key: testingSecretKey,
 					},
 				}},
+				SlackConfigs: []monitoringv1alpha1.SlackConfig{{
+					APIURL: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: "s-receiver-api-url",
+						},
+						Key: "api-url",
+					},
+					Actions: []monitoringv1alpha1.SlackAction{
+						{
+							Type: "type",
+							Text: "text",
+							Name: "my-action",
+							ConfirmField: &monitoringv1alpha1.SlackConfirmationField{
+								Text: "text",
+							},
+						},
+					},
+					Fields: []monitoringv1alpha1.SlackField{
+						{
+							Title: "title",
+							Value: "value",
+						},
+					},
+				}},
+				WebhookConfigs: []monitoringv1alpha1.WebhookConfig{{
+					URL: func(s string) *string {
+						return &s
+					}("http://test.url"),
+				}},
+				WeChatConfigs: []monitoringv1alpha1.WeChatConfig{{
+					APISecret: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+					CorpID: func(str string) *string {
+						return &str
+					}("testingCorpID"),
+				}},
+				EmailConfigs: []monitoringv1alpha1.EmailConfig{{
+					SendResolved: func(b bool) *bool {
+						return &b
+					}(true),
+					To: func(str string) *string {
+						return &str
+					}("test@example.com"),
+					AuthPassword: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+					AuthSecret: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+				}},
+				VictorOpsConfigs: []monitoringv1alpha1.VictorOpsConfig{{
+					APIKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+					RoutingKey: func(str string) *string {
+						return &str
+					}("abc"),
+				}},
+				PushoverConfigs: []monitoringv1alpha1.PushoverConfig{{
+					UserKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+					Token: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
+						},
+						Key: testingSecretKey,
+					},
+				}},
+			}},
+		},
+	}
+
+	if _, err := framework.MonClientV1alpha1.AlertmanagerConfigs(ns).Create(context.TODO(), configCR, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another AlertmanagerConfig object with nested routes.
+	configCR = &monitoringv1alpha1.AlertmanagerConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "e2e-test-amconfig-sub-routes",
+			Namespace: ns,
+		},
+		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
+			Route: &monitoringv1alpha1.Route{
+				Receiver: "e2e",
+				Matchers: []monitoringv1alpha1.Matcher{
+					{Name: "service", Value: "webapp"},
+				},
+				Routes: []apiextensionsv1.JSON{
+					{Raw: []byte(`
+{
+  "receiver": "e2e",
+  "groupBy": ["env", "instance"],
+  "matchers": [
+    {
+      "name": "job",
+      "value": "db"
+    }
+  ],
+  "routes": [
+    {
+      "receiver": "e2e",
+      "matchers": [
+        {
+          "name": "alertname",
+          "value": "TargetDown"
+        }
+      ]
+    },
+    {
+      "receiver": "e2e",
+      "matchers": [
+        {
+          "name": "severity",
+          "value": "critical|warning",
+          "regex": true
+        }
+      ]
+    }
+  ]
+}
+					`)},
+				},
+			},
+			Receivers: []monitoringv1alpha1.Receiver{{
+				Name: "e2e",
 				WebhookConfigs: []monitoringv1alpha1.WebhookConfig{{
 					URL: func(s string) *string {
 						return &s
@@ -801,7 +962,7 @@ func testAMConfigCRD(t *testing.T) {
 	// should be rejected by the operator.
 	configCR = &monitoringv1alpha1.AlertmanagerConfig{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "e2e-test-amconfig-2",
+			Name:      "e2e-test-amconfig-missing-secret",
 			Namespace: ns,
 		},
 		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
@@ -814,7 +975,40 @@ func testAMConfigCRD(t *testing.T) {
 				PagerDutyConfigs: []monitoringv1alpha1.PagerDutyConfig{{
 					RoutingKey: &v1.SecretKeySelector{
 						LocalObjectReference: v1.LocalObjectReference{
-							Name: "pd-receiver-routing-key",
+							Name: testingSecret,
+						},
+						Key: "non-existing-key",
+					},
+				}},
+			}},
+		},
+	}
+
+	if _, err := framework.MonClientV1alpha1.AlertmanagerConfigs(ns).Create(context.TODO(), configCR, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An AlertmanagerConfig resource that contains an invalid sub-route.
+	// It should be rejected by the operator.
+	configCR = &monitoringv1alpha1.AlertmanagerConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "e2e-test-amconfig-invalid-route",
+			Namespace: ns,
+		},
+		Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
+			Route: &monitoringv1alpha1.Route{
+				Receiver: "e2e",
+				Matchers: []monitoringv1alpha1.Matcher{},
+				Routes: []apiextensionsv1.JSON{
+					{Raw: []byte(`"invalid"`)},
+				},
+			},
+			Receivers: []monitoringv1alpha1.Receiver{{
+				Name: "e2e",
+				PagerDutyConfigs: []monitoringv1alpha1.PagerDutyConfig{{
+					RoutingKey: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{
+							Name: testingSecret,
 						},
 						Key: "non-existing-key",
 					},
@@ -828,13 +1022,19 @@ func testAMConfigCRD(t *testing.T) {
 	}
 
 	// Wait for the change above to take effect.
+	var lastErr error
 	err := wait.Poll(5*time.Second, 2*time.Minute, func() (bool, error) {
 		cfgSecret, err := framework.KubeClient.CoreV1().Secrets(ns).Get(context.TODO(), "alertmanager-amconfig-crd-generated", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			lastErr = errors.New("Generated configuration secret not found")
+			return false, nil
+		}
 		if err != nil {
 			return false, err
 		}
 
 		if cfgSecret.Data["alertmanager.yaml"] == nil {
+			lastErr = errors.New("'alertmanager.yaml' key is missing")
 			return false, nil
 		}
 
@@ -845,10 +1045,29 @@ route:
   group_by:
   - job
   routes:
-  - receiver: %v-e2e-test-amconfig-e2e
+  - receiver: %s-e2e-test-amconfig-many-receivers-e2e
     match:
-      namespace: %v
+      namespace: %s
     continue: true
+  - receiver: %s-e2e-test-amconfig-sub-routes-e2e
+    match:
+      namespace: %s
+      service: webapp
+    continue: true
+    routes:
+    - receiver: %s-e2e-test-amconfig-sub-routes-e2e
+      group_by:
+      - env
+      - instance
+      match:
+        job: db
+      routes:
+      - receiver: %s-e2e-test-amconfig-sub-routes-e2e
+        match:
+          alertname: TargetDown
+      - receiver: %s-e2e-test-amconfig-sub-routes-e2e
+        match_re:
+          severity: critical|warning
   - receiver: "null"
     match:
       alertname: DeadMansSwitch
@@ -857,27 +1076,119 @@ route:
   repeat_interval: 12h
 receivers:
 - name: "null"
-- name: %v-e2e-test-amconfig-e2e
+- name: %v-e2e-test-amconfig-many-receivers-e2e
   opsgenie_configs:
-  - send_resolved: false
-    api_key: 1234abc
+  - api_key: 1234abc
   pagerduty_configs:
-  - send_resolved: false
-    routing_key: 1234abc
+  - routing_key: 1234abc
+  slack_configs:
+  - api_url: http://slack.example.com
+    fields:
+    - title: title
+      value: value
+    actions:
+    - type: type
+      text: text
+      name: my-action
+      confirm:
+        text: text
   webhook_configs:
-  - send_resolved: false
-    url: http://test.url
+  - url: http://test.url
+  wechat_configs:
+  - api_secret: 1234abc
+    corp_id: testingCorpID
+  email_configs:
+  - send_resolved: true
+    to: test@example.com
+    auth_password: 1234abc
+    auth_secret: 1234abc
+  pushover_configs:
+  - user_key: 1234abc
+    token: 1234abc
+  victorops_configs:
+  - api_key: 1234abc
+    routing_key: abc
+- name: %s-e2e-test-amconfig-sub-routes-e2e
+  webhook_configs:
+  - url: http://test.url
 templates: []
-`, ns, ns, ns)
+`, ns, ns, ns, ns, ns, ns, ns, ns, ns)
 
-		if string(cfgSecret.Data["alertmanager.yaml"]) != expected {
+		if diff := cmp.Diff(string(cfgSecret.Data["alertmanager.yaml"]), expected); diff != "" {
+			t.Log("got(-), want(+):\n" + diff)
 			return false, nil
 		}
 
 		return true, nil
 	})
 	if err != nil {
+		t.Fatalf("%v: %v", err, lastErr)
+	}
+}
+
+func testUserDefinedAlertmanagerConfig(t *testing.T) {
+	// Don't run Alertmanager tests in parallel. See
+	// https://github.com/prometheus/alertmanager/issues/1835 for details.
+
+	ctx := framework.NewTestCtx(t)
+	defer ctx.Cleanup(t)
+	ns := ctx.CreateNamespace(t, framework.KubeClient)
+	ctx.SetupPrometheusRBAC(t, ns, framework.KubeClient)
+
+	yamlConfig := `route:
+  receiver: "void"
+receivers:
+- name: "void"
+`
+	amConfig := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "amconfig",
+		},
+		Data: map[string][]byte{
+			"alertmanager.yaml": []byte(yamlConfig),
+			"template1.tmpl":    []byte(`template1`),
+		},
+	}
+	if _, err := framework.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), amConfig, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
+	alertmanager := framework.MakeBasicAlertmanager("user-amconfig", 1)
+	alertmanager.Spec.ConfigSecret = "amconfig"
+	if _, err := framework.CreateAlertmanagerAndWaitUntilReady(ns, alertmanager); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the change above to take effect.
+	var lastErr error
+	err := wait.Poll(5*time.Second, 2*time.Minute, func() (bool, error) {
+		cfgSecret, err := framework.KubeClient.CoreV1().Secrets(ns).Get(context.TODO(), "alertmanager-user-amconfig-generated", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			lastErr = err
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+
+		if cfgSecret.Data["template1.tmpl"] == nil {
+			lastErr = errors.New("'template1.yaml' key is missing")
+			return false, nil
+		}
+
+		if cfgSecret.Data["alertmanager.yaml"] == nil {
+			lastErr = errors.New("'alertmanager.yaml' key is missing")
+			return false, nil
+		}
+
+		if string(cfgSecret.Data["alertmanager.yaml"]) != yamlConfig {
+			lastErr = errors.Errorf("expected Alertmanager configuration %q, got %q", yamlConfig, cfgSecret.Data["alertmanager.yaml"])
+			return false, nil
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("%v: %v", err, lastErr)
+	}
 }

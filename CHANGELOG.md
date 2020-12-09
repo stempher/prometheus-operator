@@ -1,3 +1,29 @@
+## 0.44.0 / 2020-12-02
+
+* [CHANGE] Fix child routes support in AlertmanagerConfig. #3703
+* [FEATURE] Add Slack receiver type to AlertmanagerConfig CRD. #3618
+* [FEATURE] Add WeChat receiver type to AlertmanagerConfig CRD. #3619
+* [FEATURE] Add Email receiver type to AlertmanagerConfig CRD. #3692
+* [FEATURE] Add Pushover receiver type to AlertmanagerConfig CRD. #3697
+* [FEATURE] Add VictorOps receiver type to AlertmanagerConfig CRD. #3701
+* [ENHANCEMENT] Add option to allow configuring object storage for Thanos. #3668
+* [ENHANCEMENT] Add TLS support for remote read. #3714
+* [ENHANCEMENT] Include EnforcedSampleLimit as a metric. #3617
+* [ENHANCEMENT] Adjust config reloader memory requests and limits. #3660
+* [ENHANCEMENT] Add `clusterGossipInterval`, `clusterPushpullInterval` and `clusterPeerTimeout` fields to Alertmanager CRD. #3663
+* [BUGFIX] Handle all possible receiver types in AlertmanagerConfig. #3689
+* [BUGFIX] Fix operator crashing on empty Probe targets. #3637
+* [BUGFIX] Fix usage of `--prometheus-default-base-image`, `--alertmanager-default-base-image`, and `--thanos-default-base-image` flags. #3642
+* [BUGFIX] Fix matching labels with empty values when using Exists/NotExists operators. #3686
+
+## 0.43.2 / 2020-11-06
+
+* [BUGFIX] Fix issue with additional data from the Alertmanager config's secret not being kept. #3647
+
+## 0.43.1 / 2020-11-04
+
+* [BUGFIX] Fix Alertmanager controller to wait for all informers to be synced before reconciling. #3641
+
 ## 0.43.0 / 2020-10-26
 
 This release introduces a new `AlertmanagerConfig` CRD that allows to split the
@@ -33,7 +59,7 @@ future.
 
 ## 0.42.0 / 2020-09-09
 
-The Prometheus Operator now lives in its own indepent GitHub organization.  
+The Prometheus Operator now lives in its own independent GitHub organization.  
 We have also added a governance (#3398).
 
 * [FEATURE] Move API types out into their own module (#3395)
@@ -558,7 +584,7 @@ but causes this change.
 * [CHANGE] Default to Alertmanager v0.7.0.
 * [FEATURE] Add route prefix support to Alertmanager resource.
 * [FEATURE] Add metrics on expected replicas.
-* [FEATURE] Support for runing Alertmanager v0.7.0.
+* [FEATURE] Support for running Alertmanager v0.7.0.
 * [BUGFIX] Fix sensitive rollout triggering.
 
 ## 0.9.1 / 2017-05-18

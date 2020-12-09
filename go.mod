@@ -19,13 +19,13 @@ require (
 	github.com/oklog/run v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus-community/prom-label-proxy v0.2.0
-	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.43.0
+	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.44.0
 	github.com/prometheus/alertmanager v0.21.0
 	github.com/prometheus/client_golang v1.8.0
 	github.com/prometheus/common v0.14.0
 	github.com/prometheus/prometheus v1.8.2-0.20201015110737-0a7fdd3b7696
 	github.com/stretchr/testify v1.6.1
-	github.com/thanos-io/thanos v0.16.0-rc.1
+	github.com/thanos-io/thanos v0.16.0
 	golang.org/x/sync v0.0.0-20201008141435-b3e1573b7520
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 	gopkg.in/yaml.v2 v2.3.0
@@ -34,6 +34,7 @@ require (
 	k8s.io/apimachinery v0.19.2
 	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/component-base v0.19.2
+	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.3.0
 	k8s.io/utils v0.0.0-20200729134348-d5654de09c73
 )
@@ -43,4 +44,6 @@ replace (
 	// A replace directive is needed for k8s.io/client-go because Cortex (which
 	// is an indirect dependency through Thanos) has a requirement on v12.0.0.
 	k8s.io/client-go => k8s.io/client-go v0.19.2
+	k8s.io/klog => github.com/simonpasquier/klog-gokit v0.3.0
+	k8s.io/klog/v2 => github.com/simonpasquier/klog-gokit/v2 v2.0.1
 )

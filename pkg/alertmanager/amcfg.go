@@ -17,8 +17,11 @@ package alertmanager
 import (
 	"context"
 	"fmt"
+	"net"
 	"path"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
@@ -27,151 +30,9 @@ import (
 	"github.com/prometheus-operator/prometheus-operator/pkg/assets"
 	"github.com/prometheus/alertmanager/config"
 	commoncfg "github.com/prometheus/common/config"
-	"github.com/prometheus/common/model"
 	"gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-// Customization of Config type from alertmanager repo:
-// https://github.com/prometheus/alertmanager/blob/master/config/config.go
-//
-// Custom global type to get around obfuscation of secret values when
-// marshalling. See the following issue for details:
-// https://github.com/prometheus/alertmanager/issues/1985
-type alertmanagerConfig struct {
-	Global       *globalConfig  `yaml:"global,omitempty" json:"global,omitempty"`
-	Route        *route         `yaml:"route,omitempty" json:"route,omitempty"`
-	InhibitRules []*inhibitRule `yaml:"inhibit_rules,omitempty" json:"inhibit_rules,omitempty"`
-	Receivers    []*receiver    `yaml:"receivers,omitempty" json:"receivers,omitempty"`
-	Templates    []string       `yaml:"templates" json:"templates"`
-}
-
-type globalConfig struct {
-	// ResolveTimeout is the time after which an alert is declared resolved
-	// if it has not been updated.
-	ResolveTimeout model.Duration `yaml:"resolve_timeout" json:"resolve_timeout"`
-
-	HTTPConfig *commoncfg.HTTPClientConfig `yaml:"http_config,omitempty" json:"http_config,omitempty"`
-
-	SMTPFrom         string          `yaml:"smtp_from,omitempty" json:"smtp_from,omitempty"`
-	SMTPHello        string          `yaml:"smtp_hello,omitempty" json:"smtp_hello,omitempty"`
-	SMTPSmarthost    config.HostPort `yaml:"smtp_smarthost,omitempty" json:"smtp_smarthost,omitempty"`
-	SMTPAuthUsername string          `yaml:"smtp_auth_username,omitempty" json:"smtp_auth_username,omitempty"`
-	SMTPAuthPassword string          `yaml:"smtp_auth_password,omitempty" json:"smtp_auth_password,omitempty"`
-	SMTPAuthSecret   string          `yaml:"smtp_auth_secret,omitempty" json:"smtp_auth_secret,omitempty"`
-	SMTPAuthIdentity string          `yaml:"smtp_auth_identity,omitempty" json:"smtp_auth_identity,omitempty"`
-	SMTPRequireTLS   bool            `yaml:"smtp_require_tls,omitempty" json:"smtp_require_tls,omitempty"`
-	SlackAPIURL      *config.URL     `yaml:"slack_api_url,omitempty" json:"slack_api_url,omitempty"`
-	PagerdutyURL     *config.URL     `yaml:"pagerduty_url,omitempty" json:"pagerduty_url,omitempty"`
-	HipchatAPIURL    *config.URL     `yaml:"hipchat_api_url,omitempty" json:"hipchat_api_url,omitempty"`
-	HipchatAuthToken string          `yaml:"hipchat_auth_token,omitempty" json:"hipchat_auth_token,omitempty"`
-	OpsGenieAPIURL   *config.URL     `yaml:"opsgenie_api_url,omitempty" json:"opsgenie_api_url,omitempty"`
-	OpsGenieAPIKey   string          `yaml:"opsgenie_api_key,omitempty" json:"opsgenie_api_key,omitempty"`
-	WeChatAPIURL     *config.URL     `yaml:"wechat_api_url,omitempty" json:"wechat_api_url,omitempty"`
-	WeChatAPISecret  string          `yaml:"wechat_api_secret,omitempty" json:"wechat_api_secret,omitempty"`
-	WeChatAPICorpID  string          `yaml:"wechat_api_corp_id,omitempty" json:"wechat_api_corp_id,omitempty"`
-	VictorOpsAPIURL  *config.URL     `yaml:"victorops_api_url,omitempty" json:"victorops_api_url,omitempty"`
-	VictorOpsAPIKey  string          `yaml:"victorops_api_key,omitempty" json:"victorops_api_key,omitempty"`
-}
-
-type route struct {
-	Receiver       string            `yaml:"receiver,omitempty" json:"receiver,omitempty"`
-	GroupByStr     []string          `yaml:"group_by,omitempty" json:"group_by,omitempty"`
-	Match          map[string]string `yaml:"match,omitempty" json:"match,omitempty"`
-	MatchRE        map[string]string `yaml:"match_re,omitempty" json:"match_re,omitempty"`
-	Continue       bool              `yaml:"continue,omitempty" json:"continue,omitempty"`
-	Routes         []*route          `yaml:"routes,omitempty" json:"routes,omitempty"`
-	GroupWait      string            `yaml:"group_wait,omitempty" json:"group_wait,omitempty"`
-	GroupInterval  string            `yaml:"group_interval,omitempty" json:"group_interval,omitempty"`
-	RepeatInterval string            `yaml:"repeat_interval,omitempty" json:"repeat_interval,omitempty"`
-}
-
-type inhibitRule struct {
-	TargetMatch   map[string]string `yaml:"target_match,omitempty" json:"target_match,omitempty"`
-	TargetMatchRE map[string]string `yaml:"target_match_re,omitempty" json:"target_match_re,omitempty"`
-	SourceMatch   map[string]string `yaml:"source_match,omitempty" json:"source_match,omitempty"`
-	SourceMatchRE map[string]string `yaml:"source_match_re,omitempty" json:"source_match_re,omitempty"`
-	Equal         []string          `yaml:"equal,omitempty" json:"equal,omitempty"`
-}
-
-type receiver struct {
-	Name             string             `yaml:"name" json:"name"`
-	OpsgenieConfigs  []*opsgenieConfig  `yaml:"opsgenie_configs,omitempty" json:"opsgenie_configs,omitempty"`
-	PagerdutyConfigs []*pagerdutyConfig `yaml:"pagerduty_configs,omitempty" json:"pagerduty_configs,omitempty"`
-	WebhookConfigs   []*webhookConfig   `yaml:"webhook_configs,omitempty" json:"webhook_configs,omitempty"`
-}
-
-type webhookConfig struct {
-	VSendResolved bool              `yaml:"send_resolved" json:"send_resolved"`
-	URL           string            `yaml:"url,omitempty" json:"url,omitempty"`
-	HTTPConfig    *httpClientConfig `yaml:"http_config,omitempty" json:"http_config,omitempty"`
-	MaxAlerts     int32             `yaml:"max_alerts,omitempty" json:"max_alerts,omitempty"`
-}
-
-type pagerdutyConfig struct {
-	VSendResolved bool              `yaml:"send_resolved" json:"send_resolved"`
-	HTTPConfig    *httpClientConfig `yaml:"http_config,omitempty" json:"http_config,omitempty"`
-	ServiceKey    string            `yaml:"service_key,omitempty" json:"service_key,omitempty"`
-	RoutingKey    string            `yaml:"routing_key,omitempty" json:"routing_key,omitempty"`
-	URL           string            `yaml:"url,omitempty" json:"url,omitempty"`
-	Client        string            `yaml:"client,omitempty" json:"client,omitempty"`
-	ClientURL     string            `yaml:"client_url,omitempty" json:"client_url,omitempty"`
-	Description   string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Details       map[string]string `yaml:"details,omitempty" json:"details,omitempty"`
-	Images        []pagerdutyImage  `yaml:"images,omitempty" json:"images,omitempty"`
-	Links         []pagerdutyLink   `yaml:"links,omitempty" json:"links,omitempty"`
-	Severity      string            `yaml:"severity,omitempty" json:"severity,omitempty"`
-	Class         string            `yaml:"class,omitempty" json:"class,omitempty"`
-	Component     string            `yaml:"component,omitempty" json:"component,omitempty"`
-	Group         string            `yaml:"group,omitempty" json:"group,omitempty"`
-}
-
-type opsgenieConfig struct {
-	VSendResolved bool                `yaml:"send_resolved" json:"send_resolved"`
-	HTTPConfig    *httpClientConfig   `yaml:"http_config,omitempty" json:"http_config,omitempty"`
-	APIKey        string              `yaml:"api_key,omitempty" json:"api_key,omitempty"`
-	APIURL        string              `yaml:"api_url,omitempty" json:"api_url,omitempty"`
-	Message       string              `yaml:"message,omitempty" json:"message,omitempty"`
-	Description   string              `yaml:"description,omitempty" json:"description,omitempty"`
-	Source        string              `yaml:"source,omitempty" json:"source,omitempty"`
-	Details       map[string]string   `yaml:"details,omitempty" json:"details,omitempty"`
-	Responders    []opsgenieResponder `yaml:"responders,omitempty" json:"responders,omitempty"`
-	Tags          string              `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Note          string              `yaml:"note,omitempty" json:"note,omitempty"`
-	Priority      string              `yaml:"priority,omitempty" json:"priority,omitempty"`
-}
-
-type httpClientConfig struct {
-	BasicAuth       *basicAuth          `yaml:"basic_auth,omitempty"`
-	BearerToken     string              `yaml:"bearer_token,omitempty"`
-	BearerTokenFile string              `yaml:"bearer_token_file,omitempty"`
-	ProxyURL        string              `yaml:"proxy_url,omitempty"`
-	TLSConfig       commoncfg.TLSConfig `yaml:"tls_config,omitempty"`
-}
-
-type basicAuth struct {
-	Username     string `yaml:"username"`
-	Password     string `yaml:"password,omitempty"`
-	PasswordFile string `yaml:"password_file,omitempty"`
-}
-
-type pagerdutyLink struct {
-	Href string `yaml:"href,omitempty" json:"href,omitempty"`
-	Text string `yaml:"text,omitempty" json:"text,omitempty"`
-}
-
-type pagerdutyImage struct {
-	Src  string `yaml:"src,omitempty" json:"src,omitempty"`
-	Alt  string `yaml:"alt,omitempty" json:"alt,omitempty"`
-	Href string `yaml:"href,omitempty" json:"href,omitempty"`
-}
-
-type opsgenieResponder struct {
-	ID       string `yaml:"id,omitempty" json:"id,omitempty"`
-	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
-	Username string `yaml:"username,omitempty" json:"username,omitempty"`
-	Type     string `yaml:"type,omitempty" json:"type,omitempty"`
-}
 
 func loadCfg(s string) (*alertmanagerConfig, error) {
 	// Run upstream Load function to get any validation checks that it runs.
@@ -258,8 +119,7 @@ func (cg *configGenerator) generateConfig(
 }
 
 func convertRoute(in *monitoringv1alpha1.Route, crKey types.NamespacedName, firstLevelRoute bool) *route {
-
-	// Enforce continue to be true for main Route in a CR
+	// Enforce "continue" to be true for the top-level route.
 	cont := in.Continue
 	if firstLevelRoute {
 		cont = true
@@ -280,20 +140,27 @@ func convertRoute(in *monitoringv1alpha1.Route, crKey types.NamespacedName, firs
 		delete(matchRE, "namespace")
 	}
 
-	// Set to nil if empty so that it doesn't show up in resulting yaml
+	// Set to nil if empty so that it doesn't show up in the resulting yaml.
 	if len(match) == 0 {
 		match = nil
 	}
-	// Set to nil if empty so that it doesn't show up in resulting yaml
+	// Set to nil if empty so that it doesn't show up in the resulting yaml.
 	if len(matchRE) == 0 {
 		matchRE = nil
 	}
 
 	var routes []*route
 	if len(in.Routes) > 0 {
-		routes := make([]*route, len(in.Routes))
-		for i := range in.Routes {
-			routes[i] = convertRoute(&in.Routes[i], crKey, false)
+		routes = make([]*route, len(in.Routes))
+		children, err := in.ChildRoutes()
+		if err != nil {
+			// The controller should already have checked that ChildRoutes()
+			// doesn't return an error when selecting AlertmanagerConfig CRDs.
+			// If there's an error here, we have a serious bug in the code
+			panic(err)
+		}
+		for i := range children {
+			routes[i] = convertRoute(&children[i], crKey, false)
 		}
 	}
 
@@ -326,6 +193,18 @@ func (cg *configGenerator) convertReceiver(ctx context.Context, in *monitoringv1
 		}
 	}
 
+	var slackConfigs []*slackConfig
+	if l := len(in.SlackConfigs); l > 0 {
+		slackConfigs = make([]*slackConfig, l)
+		for i := range in.SlackConfigs {
+			receiver, err := cg.convertSlackConfig(ctx, in.SlackConfigs[i], crKey)
+			if err != nil {
+				return nil, errors.Wrapf(err, "SlackConfig[%d]", i)
+			}
+			slackConfigs[i] = receiver
+		}
+	}
+
 	var webhookConfigs []*webhookConfig
 	if l := len(in.WebhookConfigs); l > 0 {
 		webhookConfigs = make([]*webhookConfig, l)
@@ -350,19 +229,70 @@ func (cg *configGenerator) convertReceiver(ctx context.Context, in *monitoringv1
 		}
 	}
 
+	var weChatConfigs []*weChatConfig
+	if l := len(in.WeChatConfigs); l > 0 {
+		weChatConfigs = make([]*weChatConfig, l)
+		for i := range in.WeChatConfigs {
+			receiver, err := cg.convertWeChatConfig(ctx, in.WeChatConfigs[i], crKey)
+			if err != nil {
+				return nil, errors.Wrapf(err, "WeChatConfig[%d]", i)
+			}
+			weChatConfigs[i] = receiver
+		}
+	}
+
+	var emailConfigs []*emailConfig
+	if l := len(in.EmailConfigs); l > 0 {
+		emailConfigs = make([]*emailConfig, l)
+		for i := range in.EmailConfigs {
+			receiver, err := cg.convertEmailConfig(ctx, in.EmailConfigs[i], crKey)
+			if err != nil {
+				return nil, errors.Wrapf(err, "EmailConfig[%d]", i)
+			}
+			emailConfigs[i] = receiver
+		}
+	}
+
+	var victorOpsConfigs []*victorOpsConfig
+	if l := len(in.VictorOpsConfigs); l > 0 {
+		victorOpsConfigs = make([]*victorOpsConfig, l)
+		for i := range in.VictorOpsConfigs {
+			receiver, err := cg.convertVictorOpsConfig(ctx, in.VictorOpsConfigs[i], crKey)
+			if err != nil {
+				return nil, errors.Wrapf(err, "VictorOpsConfig[%d]", i)
+			}
+			victorOpsConfigs[i] = receiver
+		}
+	}
+
+	var pushoverConfigs []*pushoverConfig
+	if l := len(in.PushoverConfigs); l > 0 {
+		pushoverConfigs = make([]*pushoverConfig, l)
+		for i := range in.PushoverConfigs {
+			receiver, err := cg.convertPushoverConfig(ctx, in.PushoverConfigs[i], crKey)
+			if err != nil {
+				return nil, errors.Wrapf(err, "PushoverConfig[%d]", i)
+			}
+			pushoverConfigs[i] = receiver
+		}
+	}
+
 	return &receiver{
 		Name:             prefixReceiverName(in.Name, crKey),
 		OpsgenieConfigs:  opsgenieConfigs,
 		PagerdutyConfigs: pagerdutyConfigs,
+		SlackConfigs:     slackConfigs,
 		WebhookConfigs:   webhookConfigs,
+		WeChatConfigs:    weChatConfigs,
+		EmailConfigs:     emailConfigs,
+		VictorOpsConfigs: victorOpsConfigs,
+		PushoverConfigs:  pushoverConfigs,
 	}, nil
 }
 
 func (cg *configGenerator) convertWebhookConfig(ctx context.Context, in monitoringv1alpha1.WebhookConfig, crKey types.NamespacedName) (*webhookConfig, error) {
-	out := &webhookConfig{}
-
-	if in.SendResolved != nil {
-		out.VSendResolved = *in.SendResolved
+	out := &webhookConfig{
+		VSendResolved: in.SendResolved,
 	}
 
 	if in.URLSecret != nil {
@@ -390,11 +320,153 @@ func (cg *configGenerator) convertWebhookConfig(ctx context.Context, in monitori
 	return out, nil
 }
 
-func (cg *configGenerator) convertPagerdutyConfig(ctx context.Context, in monitoringv1alpha1.PagerDutyConfig, crKey types.NamespacedName) (*pagerdutyConfig, error) {
-	out := &pagerdutyConfig{}
+func (cg *configGenerator) convertSlackConfig(ctx context.Context, in monitoringv1alpha1.SlackConfig, crKey types.NamespacedName) (*slackConfig, error) {
+	out := &slackConfig{
+		VSendResolved: in.SendResolved,
+	}
 
-	if in.SendResolved != nil {
-		out.VSendResolved = *in.SendResolved
+	if in.APIURL != nil {
+		url, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.APIURL)
+		if err != nil {
+			return nil, errors.Errorf("failed to get key %q from secret %q", in.APIURL.Key, in.APIURL.Name)
+		}
+		out.APIURL = url
+	}
+
+	if in.Channel != nil {
+		out.Channel = *in.Channel
+	}
+
+	if in.Username != nil {
+		out.Username = *in.Username
+	}
+
+	if in.Color != nil {
+		out.Color = *in.Color
+	}
+
+	if in.Title != nil {
+		out.Title = *in.Title
+	}
+
+	if in.TitleLink != nil {
+		out.TitleLink = *in.TitleLink
+	}
+
+	if in.Pretext != nil {
+		out.Pretext = *in.Pretext
+	}
+
+	if in.Text != nil {
+		out.Text = *in.Text
+	}
+
+	if in.ShortFields != nil {
+		out.ShortFields = *in.ShortFields
+	}
+
+	if in.Footer != nil {
+		out.Footer = *in.Footer
+	}
+
+	if in.Fallback != nil {
+		out.Fallback = *in.Fallback
+	}
+
+	if in.CallbackID != nil {
+		out.CallbackID = *in.CallbackID
+	}
+
+	if in.IconEmoji != nil {
+		out.IconEmoji = *in.IconEmoji
+	}
+
+	if in.IconURL != nil {
+		out.IconURL = *in.IconURL
+	}
+
+	if in.ImageURL != nil {
+		out.ImageURL = *in.ImageURL
+	}
+
+	if in.ThumbURL != nil {
+		out.ThumbURL = *in.ThumbURL
+	}
+
+	if in.LinkNames != nil {
+		out.LinkNames = *in.LinkNames
+	}
+
+	out.MrkdwnIn = in.MrkdwnIn
+
+	var actions []slackAction
+	if l := len(in.Actions); l > 0 {
+		actions = make([]slackAction, l)
+		for i, a := range in.Actions {
+			var action slackAction = slackAction{
+				Type:  a.Type,
+				Text:  a.Text,
+				URL:   a.URL,
+				Style: a.Style,
+				Name:  a.Name,
+				Value: a.Value,
+			}
+
+			if a.ConfirmField != nil {
+				var confirmField slackConfirmationField = slackConfirmationField{
+					Text: a.ConfirmField.Text,
+				}
+
+				if a.ConfirmField.Title != nil {
+					confirmField.Title = *a.ConfirmField.Title
+				}
+
+				if a.ConfirmField.OkText != nil {
+					confirmField.OkText = *a.ConfirmField.OkText
+				}
+
+				if a.ConfirmField.DismissText != nil {
+					confirmField.DismissText = *a.ConfirmField.DismissText
+				}
+
+				action.ConfirmField = &confirmField
+			}
+
+			actions[i] = action
+		}
+		out.Actions = actions
+	}
+
+	if l := len(in.Fields); l > 0 {
+		var fields []slackField = make([]slackField, l)
+		for i, f := range in.Fields {
+			var field slackField = slackField{
+				Title: f.Title,
+				Value: f.Value,
+			}
+
+			if f.Short != nil {
+				field.Short = *f.Short
+			}
+			fields[i] = field
+		}
+		out.Fields = fields
+	}
+
+	if in.HTTPConfig != nil {
+		httpConfig, err := cg.convertHTTPConfig(ctx, *in.HTTPConfig, crKey)
+		if err != nil {
+			return nil, err
+		}
+		out.HTTPConfig = httpConfig
+	}
+
+	return out, nil
+}
+
+func (cg *configGenerator) convertPagerdutyConfig(ctx context.Context, in monitoringv1alpha1.PagerDutyConfig, crKey types.NamespacedName) (*pagerdutyConfig, error) {
+	out := &pagerdutyConfig{
+		VSendResolved: in.SendResolved,
 	}
 
 	if in.RoutingKey != nil {
@@ -466,10 +538,8 @@ func (cg *configGenerator) convertPagerdutyConfig(ctx context.Context, in monito
 }
 
 func (cg *configGenerator) convertOpsgenieConfig(ctx context.Context, in monitoringv1alpha1.OpsGenieConfig, crKey types.NamespacedName) (*opsgenieConfig, error) {
-	out := &opsgenieConfig{}
-
-	if in.SendResolved != nil {
-		out.VSendResolved = *in.SendResolved
+	out := &opsgenieConfig{
+		VSendResolved: in.SendResolved,
 	}
 
 	if in.APIKey != nil {
@@ -540,6 +610,291 @@ func (cg *configGenerator) convertOpsgenieConfig(ctx context.Context, in monitor
 		out.HTTPConfig = httpConfig
 	}
 
+	return out, nil
+}
+
+func (cg *configGenerator) convertWeChatConfig(ctx context.Context, in monitoringv1alpha1.WeChatConfig, crKey types.NamespacedName) (*weChatConfig, error) {
+
+	out := &weChatConfig{
+		VSendResolved: in.SendResolved,
+	}
+
+	if in.APISecret != nil {
+		apiSecret, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.APISecret)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.APISecret)
+		}
+		out.APISecret = apiSecret
+	}
+
+	if in.APIURL != nil {
+		out.APIURL = *in.APIURL
+	}
+
+	if in.CorpID != nil {
+		out.CorpID = *in.CorpID
+	}
+
+	if in.AgentID != nil {
+		out.AgentID = *in.AgentID
+	}
+
+	if in.ToUser != nil {
+		out.ToUser = *in.ToUser
+	}
+
+	if in.ToParty != nil {
+		out.ToParty = *in.ToParty
+	}
+
+	if in.ToTag != nil {
+		out.ToTag = *in.ToTag
+	}
+
+	if in.Message != nil {
+		out.Message = *in.Message
+	}
+
+	if in.MessageType != nil {
+		out.MessageType = *in.MessageType
+	}
+
+	if in.HTTPConfig != nil {
+		httpConfig, err := cg.convertHTTPConfig(ctx, *in.HTTPConfig, crKey)
+		if err != nil {
+			return nil, err
+		}
+		out.HTTPConfig = httpConfig
+	}
+
+	return out, nil
+}
+
+func (cg *configGenerator) convertEmailConfig(ctx context.Context, in monitoringv1alpha1.EmailConfig, crKey types.NamespacedName) (*emailConfig, error) {
+	out := &emailConfig{
+		VSendResolved: in.SendResolved,
+	}
+
+	if in.To == nil || *in.To == "" {
+		return nil, errors.New("missing to address in email config")
+	}
+	out.To = *in.To
+
+	if in.From != nil {
+		out.From = *in.From
+	}
+
+	if in.Hello != nil {
+		out.Hello = *in.Hello
+	}
+
+	if in.Smarthost != nil {
+		host, port, err := net.SplitHostPort(*in.Smarthost)
+		if err != nil {
+			return nil, errors.New("failed to extract host and port from Smarthost")
+		}
+		out.Smarthost.Host = host
+		out.Smarthost.Port = port
+	}
+
+	if in.AuthUsername != nil {
+		out.AuthUsername = *in.AuthUsername
+	}
+
+	if in.AuthPassword != nil {
+		authPassword, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.AuthPassword)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.AuthPassword)
+		}
+		out.AuthPassword = authPassword
+	}
+	if in.AuthSecret != nil {
+		authSecret, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.AuthSecret)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.AuthSecret)
+		}
+		out.AuthSecret = authSecret
+	}
+
+	if in.AuthIdentity != nil {
+		out.AuthIdentity = *in.AuthIdentity
+	}
+
+	var headers map[string]string
+	if l := len(in.Headers); l > 0 {
+		headers = make(map[string]string, l)
+
+		var key string
+		for _, d := range in.Headers {
+			key = strings.Title(key)
+			if _, ok := headers[key]; ok {
+				return nil, errors.Errorf("duplicate header %q in email config", key)
+			}
+			headers[key] = d.Value
+		}
+	}
+	out.Headers = headers
+
+	if in.HTML != nil {
+		out.HTML = *in.HTML
+	}
+
+	if in.Text != nil {
+		out.Text = *in.Text
+	}
+
+	if in.RequireTLS != nil {
+		out.RequireTLS = in.RequireTLS
+	}
+
+	if in.TLSConfig != nil {
+		out.TLSConfig = cg.convertTLSConfig(ctx, in.TLSConfig, crKey)
+	}
+
+	return out, nil
+}
+
+func (cg *configGenerator) convertVictorOpsConfig(ctx context.Context, in monitoringv1alpha1.VictorOpsConfig, crKey types.NamespacedName) (*victorOpsConfig, error) {
+	out := &victorOpsConfig{
+		VSendResolved: in.SendResolved,
+	}
+
+	if in.APIKey != nil {
+		apiKey, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.APIKey)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.APIKey)
+		}
+		out.APIKey = apiKey
+	}
+	if in.APIURL != nil {
+		out.APIURL = *in.APIURL
+	}
+
+	if in.RoutingKey == nil || *in.RoutingKey == "" {
+		return nil, errors.New("missing Routing key in VictorOps config")
+	}
+	out.RoutingKey = *in.RoutingKey
+
+	if in.MessageType != nil {
+		out.MessageType = *in.MessageType
+	}
+	if in.EntityDisplayName != nil {
+		out.EntityDisplayName = *in.EntityDisplayName
+	}
+	if in.StateMessage != nil {
+		out.StateMessage = *in.StateMessage
+	}
+	if in.MonitoringTool != nil {
+		out.MonitoringTool = *in.MonitoringTool
+	}
+
+	var customFields map[string]string
+	if l := len(in.CustomFields); l > 0 {
+		// from https://github.com/prometheus/alertmanager/blob/a7f9fdadbecbb7e692d2cd8d3334e3d6de1602e1/config/notifiers.go#L497
+		reservedFields := map[string]struct{}{
+			"routing_key":         {},
+			"message_type":        {},
+			"state_message":       {},
+			"entity_display_name": {},
+			"monitoring_tool":     {},
+			"entity_id":           {},
+			"entity_state":        {},
+		}
+		customFields = make(map[string]string, l)
+		for _, d := range in.CustomFields {
+			if _, ok := reservedFields[d.Key]; ok {
+				return nil, errors.Errorf("VictorOps config contains custom field %s which cannot be used as it conflicts with the fixed/static fields", d.Key)
+			}
+			customFields[d.Key] = d.Value
+		}
+	}
+	out.CustomFields = customFields
+
+	if in.HTTPConfig != nil {
+		httpConfig, err := cg.convertHTTPConfig(ctx, *in.HTTPConfig, crKey)
+		if err != nil {
+			return nil, err
+		}
+		out.HTTPConfig = httpConfig
+	}
+	return out, nil
+}
+
+func (cg *configGenerator) convertPushoverConfig(ctx context.Context, in monitoringv1alpha1.PushoverConfig, crKey types.NamespacedName) (*pushoverConfig, error) {
+	out := &pushoverConfig{
+		VSendResolved: in.SendResolved,
+	}
+
+	{
+		if in.UserKey == nil {
+			return nil, errors.Errorf("mandatory field %q is empty", "userKey")
+		}
+		userKey, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.UserKey)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.UserKey)
+		}
+		if userKey == "" {
+			return nil, errors.Errorf("mandatory field %q is empty", "userKey")
+		}
+		out.UserKey = userKey
+	}
+
+	{
+		if in.Token == nil {
+			return nil, errors.Errorf("mandatory field %q is empty", "token")
+		}
+		token, err := cg.store.GetSecretKey(ctx, crKey.Namespace, *in.Token)
+		if err != nil {
+			return nil, errors.Errorf("failed to get secret %q", in.Token)
+		}
+		if token == "" {
+			return nil, errors.Errorf("mandatory field %q is empty", "token")
+		}
+		out.Token = token
+	}
+
+	if in.Title != nil {
+		out.Title = *in.Title
+	}
+	if in.Message != nil {
+		out.Message = *in.Message
+	}
+	if in.URL != nil {
+		out.URL = *in.URL
+	}
+	if in.URLTitle != nil {
+		out.URLTitle = *in.URLTitle
+	}
+	if in.Sound != nil {
+		out.Sound = *in.Sound
+	}
+	if in.Priority != nil {
+		out.Priority = *in.Priority
+	}
+	if in.Retry != nil {
+		retry, err := time.ParseDuration(*in.Retry)
+		if err != nil {
+			return nil, errors.Errorf("failed to parse Retry duration: %s", err)
+		}
+		out.Retry = duration(retry)
+	}
+	if in.Expire != nil {
+		expire, err := time.ParseDuration(*in.Expire)
+		if err != nil {
+			return nil, errors.Errorf("failed to parse Expire duration: %s", err)
+		}
+		out.Expire = duration(expire)
+	}
+	if in.HTML != nil {
+		out.HTML = *in.HTML
+	}
+	if in.HTTPConfig != nil {
+		httpConfig, err := cg.convertHTTPConfig(ctx, *in.HTTPConfig, crKey)
+		if err != nil {
+			return nil, err
+		}
+		out.HTTPConfig = httpConfig
+	}
 	return out, nil
 }
 

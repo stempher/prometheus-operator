@@ -39,8 +39,8 @@ const (
 	tlsAssetsDir           = "/etc/alertmanager/certs"
 	secretsDir             = "/etc/alertmanager/secrets/"
 	configmapsDir          = "/etc/alertmanager/configmaps/"
-	alertmanagerConfDir    = "/etc/alertmanager/config"
-	alertmanagerConfFile   = alertmanagerConfDir + "/alertmanager.yaml"
+	alertmanagerConfigDir  = "/etc/alertmanager/config"
+	alertmanagerConfigFile = "alertmanager.yaml"
 	alertmanagerStorageDir = "/alertmanager"
 	defaultPortName        = "web"
 )
@@ -209,17 +209,17 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 	// Before editing 'a' create deep copy, to prevent side effects. For more
 	// details see https://github.com/prometheus-operator/prometheus-operator/issues/1659
 	a = a.DeepCopy()
-
-	amBaseImage := operator.StringValOrDefault(a.Spec.BaseImage, operator.DefaultAlertmanagerBaseImage)
 	amVersion := operator.StringValOrDefault(a.Spec.Version, operator.DefaultAlertmanagerVersion)
-	amTag := operator.StringValOrDefault(a.Spec.Tag, "")
-	amSHA := operator.StringValOrDefault(a.Spec.SHA, "")
-	amImagePath, err := operator.BuildImagePath(amBaseImage, amVersion, amTag, amSHA)
+
+	amImagePath, err := operator.BuildImagePath(
+		operator.StringPtrValOrDefault(a.Spec.Image, ""),
+		operator.StringValOrDefault(a.Spec.BaseImage, config.AlertmanagerDefaultBaseImage),
+		amVersion,
+		operator.StringValOrDefault(a.Spec.Tag, ""),
+		operator.StringValOrDefault(a.Spec.SHA, ""),
+	)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to build image path")
-	}
-	if a.Spec.Image != nil && strings.TrimSpace(*a.Spec.Image) != "" {
-		amImagePath = *a.Spec.Image
 	}
 
 	version, err := semver.ParseTolerant(amVersion)
@@ -228,7 +228,7 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 	}
 
 	amArgs := []string{
-		fmt.Sprintf("--config.file=%s", alertmanagerConfFile),
+		fmt.Sprintf("--config.file=%s", path.Join(alertmanagerConfigDir, alertmanagerConfigFile)),
 		fmt.Sprintf("--storage.path=%s", alertmanagerStorageDir),
 		fmt.Sprintf("--data.retention=%s", a.Spec.Retention),
 	}
@@ -267,6 +267,18 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 
 	if a.Spec.ClusterAdvertiseAddress != "" {
 		amArgs = append(amArgs, fmt.Sprintf("--cluster.advertise-address=%s", a.Spec.ClusterAdvertiseAddress))
+	}
+
+	if a.Spec.ClusterGossipInterval != "" {
+		amArgs = append(amArgs, fmt.Sprintf("--cluster.gossip-interval=%s", a.Spec.ClusterGossipInterval))
+	}
+
+	if a.Spec.ClusterPushpullInterval != "" {
+		amArgs = append(amArgs, fmt.Sprintf("--cluster.pushpull-interval=%s", a.Spec.ClusterPushpullInterval))
+	}
+
+	if a.Spec.ClusterPeerTimeout != "" {
+		amArgs = append(amArgs, fmt.Sprintf("--cluster.peer-timeout=%s", a.Spec.ClusterPeerTimeout))
 	}
 
 	livenessProbeHandler := v1.Handler{
@@ -428,7 +440,7 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 	amVolumeMounts := []v1.VolumeMount{
 		{
 			Name:      "config-volume",
-			MountPath: alertmanagerConfDir,
+			MountPath: alertmanagerConfigDir,
 		},
 		{
 			Name:      "tls-assets",
@@ -442,11 +454,11 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 		},
 	}
 
-	reloadWatchDirs := []string{alertmanagerConfDir}
+	reloadWatchDirs := []string{alertmanagerConfigDir}
 	configReloaderVolumeMounts := []v1.VolumeMount{
 		{
 			Name:      "config-volume",
-			MountPath: alertmanagerConfDir,
+			MountPath: alertmanagerConfigDir,
 			ReadOnly:  true,
 		},
 	}
@@ -540,6 +552,7 @@ func makeStatefulSetSpec(a *monitoringv1.Alertmanager, config Config) (*appsv1.S
 			a.Spec.LogLevel,
 			configReloaderArgs,
 			configReloaderVolumeMounts,
+			-1,
 		),
 	}
 

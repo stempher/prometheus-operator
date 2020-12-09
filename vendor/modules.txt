@@ -27,6 +27,9 @@ github.com/davecgh/go-spew/spew
 ## explicit
 github.com/docker/distribution/digestset
 github.com/docker/distribution/reference
+# github.com/docker/spdystream v0.0.0-20160310174837-449fdfce4d96
+github.com/docker/spdystream
+github.com/docker/spdystream/spdy
 # github.com/edsrzf/mmap-go v1.0.0
 github.com/edsrzf/mmap-go
 # github.com/evanphx/json-patch v4.9.0+incompatible
@@ -45,8 +48,6 @@ github.com/go-kit/kit/log
 github.com/go-kit/kit/log/level
 # github.com/go-logfmt/logfmt v0.5.0
 github.com/go-logfmt/logfmt
-# github.com/go-logr/logr v0.2.0
-github.com/go-logr/logr
 # github.com/go-openapi/analysis v0.19.10
 github.com/go-openapi/analysis
 github.com/go-openapi/analysis/internal
@@ -156,7 +157,7 @@ github.com/pmezard/go-difflib/difflib
 # github.com/prometheus-community/prom-label-proxy v0.2.0
 ## explicit
 github.com/prometheus-community/prom-label-proxy/injectproxy
-# github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.43.0 => ./pkg/apis/monitoring
+# github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.44.0 => ./pkg/apis/monitoring
 ## explicit
 github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring
 github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1
@@ -225,7 +226,7 @@ github.com/spf13/pflag
 ## explicit
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/require
-# github.com/thanos-io/thanos v0.16.0-rc.1
+# github.com/thanos-io/thanos v0.16.0
 ## explicit
 github.com/thanos-io/thanos/pkg/reloader
 github.com/thanos-io/thanos/pkg/runutil
@@ -424,11 +425,14 @@ k8s.io/apimachinery/pkg/util/clock
 k8s.io/apimachinery/pkg/util/diff
 k8s.io/apimachinery/pkg/util/errors
 k8s.io/apimachinery/pkg/util/framer
+k8s.io/apimachinery/pkg/util/httpstream
+k8s.io/apimachinery/pkg/util/httpstream/spdy
 k8s.io/apimachinery/pkg/util/intstr
 k8s.io/apimachinery/pkg/util/json
 k8s.io/apimachinery/pkg/util/mergepatch
 k8s.io/apimachinery/pkg/util/naming
 k8s.io/apimachinery/pkg/util/net
+k8s.io/apimachinery/pkg/util/remotecommand
 k8s.io/apimachinery/pkg/util/runtime
 k8s.io/apimachinery/pkg/util/sets
 k8s.io/apimachinery/pkg/util/strategicpatch
@@ -439,6 +443,7 @@ k8s.io/apimachinery/pkg/util/yaml
 k8s.io/apimachinery/pkg/version
 k8s.io/apimachinery/pkg/watch
 k8s.io/apimachinery/third_party/forked/golang/json
+k8s.io/apimachinery/third_party/forked/golang/netutil
 k8s.io/apimachinery/third_party/forked/golang/reflect
 # k8s.io/client-go v12.0.0+incompatible => k8s.io/client-go v0.19.2
 ## explicit
@@ -641,9 +646,12 @@ k8s.io/client-go/tools/clientcmd/api/v1
 k8s.io/client-go/tools/metrics
 k8s.io/client-go/tools/pager
 k8s.io/client-go/tools/reference
+k8s.io/client-go/tools/remotecommand
 k8s.io/client-go/transport
+k8s.io/client-go/transport/spdy
 k8s.io/client-go/util/cert
 k8s.io/client-go/util/connrotation
+k8s.io/client-go/util/exec
 k8s.io/client-go/util/flowcontrol
 k8s.io/client-go/util/homedir
 k8s.io/client-go/util/keyutil
@@ -651,9 +659,10 @@ k8s.io/client-go/util/workqueue
 # k8s.io/component-base v0.19.2
 ## explicit
 k8s.io/component-base/cli/flag
-# k8s.io/klog v1.0.0
+# k8s.io/klog v1.0.0 => github.com/simonpasquier/klog-gokit v0.3.0
+## explicit
 k8s.io/klog
-# k8s.io/klog/v2 v2.3.0
+# k8s.io/klog/v2 v2.3.0 => github.com/simonpasquier/klog-gokit/v2 v2.0.1
 ## explicit
 k8s.io/klog/v2
 # k8s.io/kube-openapi v0.0.0-20200805222855-6aeccd4b50c6
@@ -670,3 +679,5 @@ sigs.k8s.io/structured-merge-diff/v4/value
 sigs.k8s.io/yaml
 # github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring => ./pkg/apis/monitoring
 # k8s.io/client-go => k8s.io/client-go v0.19.2
+# k8s.io/klog => github.com/simonpasquier/klog-gokit v0.3.0
+# k8s.io/klog/v2 => github.com/simonpasquier/klog-gokit/v2 v2.0.1

@@ -1,3 +1,7 @@
+## 0.44.1 / 2020-12-09
+
+* [BUGFIX] Fix Alertmanager configuration for OpsGenie receiver. #3728
+
 ## 0.44.0 / 2020-12-02
 
 * [CHANGE] Fix child routes support in AlertmanagerConfig. #3703
@@ -6,6 +10,7 @@
 * [FEATURE] Add Email receiver type to AlertmanagerConfig CRD. #3692
 * [FEATURE] Add Pushover receiver type to AlertmanagerConfig CRD. #3697
 * [FEATURE] Add VictorOps receiver type to AlertmanagerConfig CRD. #3701
+* [FEATURE] Add sharding support for prometheus cluster. #3241
 * [ENHANCEMENT] Add option to allow configuring object storage for Thanos. #3668
 * [ENHANCEMENT] Add TLS support for remote read. #3714
 * [ENHANCEMENT] Include EnforcedSampleLimit as a metric. #3617

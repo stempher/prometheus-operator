@@ -2,22 +2,24 @@ component: "Monitoring"
 
 reviewers:
 - bwplotka
-- krasi-georgiev
+- dgrisonnet
 - LiliC
 - metalmatze
 - paulfantom
-- pgier
 - s-urbaniak
 - simonpasquier
 - squat
 
 approvers:
 - bwplotka
-- krasi-georgiev
+- dgrisonnet
 - LiliC
 - metalmatze
 - paulfantom
-- pgier
 - s-urbaniak
 - simonpasquier
 - squat
+
+emeritus_approvers:
+- krasi-georgiev
+- pgier
